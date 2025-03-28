@@ -1,0 +1,78 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+  <title>Visitor Access</title>
+  <style>
+    .active { background-color: green; color: white; }
+  </style>
+</head>
+<body>
+
+  <label>Name: <input type="text" id="nameField"></label><br><br>
+
+  <button id="todayBtn">Today</button>
+  <button id="tomorrowBtn">Tomorrow</button><br><br>
+
+  <label>Date: <input type="date" id="dateField"></label><br><br>
+
+  <label>WhatsApp: <input type="text" id="whatsappField"></label><br>
+  <label>SMS: <input type="text" id="smsField"></label><br><br>
+
+  <button id="sendWhatsApp">Send via WhatsApp</button>
+  <button id="sendSMS">Send via SMS</button>
+
+  <script>
+    // Save name automatically
+    document.getElementById('nameField').addEventListener('input', function () {
+      const name = this.value;
+      localStorage.setItem('savedName', name);
+    });
+
+    // Load name if already saved
+    window.addEventListener('DOMContentLoaded', () => {
+      const savedName = localStorage.getItem('savedName');
+      if (savedName) {
+        document.getElementById('nameField').value = savedName;
+      }
+    });
+
+    const todayBtn = document.getElementById('todayBtn');
+    const tomorrowBtn = document.getElementById('tomorrowBtn');
+    const dateField = document.getElementById('dateField');
+
+    function setDateAndColor(button, date) {
+      dateField.value = date;
+      todayBtn.classList.remove('active');
+      tomorrowBtn.classList.remove('active');
+      button.classList.add('active');
+    }
+
+    todayBtn.addEventListener('click', () => {
+      const today = new Date().toISOString().split('T')[0];
+      setDateAndColor(todayBtn, today);
+    });
+
+    tomorrowBtn.addEventListener('click', () => {
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const dateStr = tomorrow.toISOString().split('T')[0];
+      setDateAndColor(tomorrowBtn, dateStr);
+    });
+
+    // Send message actions
+    document.getElementById('sendWhatsApp').addEventListener('click', () => {
+      const name = document.getElementById('nameField').value;
+      const date = document.getElementById('dateField').value;
+      const msg = `Hi, you are registered for a visit on ${date}, ${name}.`;
+      document.getElementById('whatsappField').value = msg;
+    });
+
+    document.getElementById('sendSMS').addEventListener('click', () => {
+      const name = document.getElementById('nameField').value;
+      const date = document.getElementById('dateField').value;
+      const msg = `Hi, you are registered for a visit on ${date}, ${name}.`;
+      document.getElementById('smsField').value = msg;
+    });
+  </script>
+</body>
+</html>
