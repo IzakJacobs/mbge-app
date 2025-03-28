@@ -1,0 +1,220 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MBGE Visitor Access</title>
+</head>
+<body>
+  
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MBGE Visitor Access</title>
+  <style>
+    .button-group button {
+      border: 2px solid #007bff;
+      border-radius: 8px;
+      background-color: #e6f0ff;
+      color: #000;
+      transition: background-color 0.2s;
+    }
+    .button-group button:hover {
+      background-color: #cce0ff;
+    }
+    .button-group button.selected {
+      background-color: #007bff;
+      color: #fff;
+    }
+    body {
+      font-family: sans-serif;
+      background: #f5f5f5;
+      padding: 20px;
+      max-width: 500px;
+      margin: auto;
+    }
+    input, button, select {
+      width: 100%;
+      padding: 12px;
+      margin: 10px 0;
+      font-size: 18px;
+    }
+    .button-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .button-group button {
+      flex: 1;
+      border: none;
+    }
+    .button-group button.selected {
+      background-color: #007bff;
+      color: white;
+    }
+    .date-select {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .date-select button {
+      flex: 1;
+      background-color: #ccc;
+      border: none;
+    }
+    .date-select button.selected {
+      background-color: #007bff;
+      color: white;
+      border: 2px solid #0056b3;
+    }
+    .or-label {
+      text-align: center;
+      font-weight: bold;
+      margin: 10px 0;
+    }
+  </style>
+</head>
+<body>
+  <h2>MBGE Visitor Access</h2>
+
+  <label>Visitor's Name:</label>
+  <input type="text" id="name" placeholder="e.g. John Jones">
+
+  <div class="or-label">OR</div>
+
+  <label for="savedVisitors">Select Saved Visitor:</label>
+  <select id="savedVisitors">
+    <option value="">-- Select --</option>
+  </select>
+
+  <label>Visit Date:</label>
+  <div class="date-select">
+    <button type="button" id="todayBtn">Today</button>
+    <button type="button" id="tomorrowBtn">Tomorrow</button>
+  </div>
+
+  <label>License Plate:</label>
+  <input type="text" id="plate" placeholder="e.g. ABC123GP">
+
+  <div class="button-group">
+    <button id="whatsappBtn">Generate Invitation and send to WA</button>
+    <div class="or-label">OR</div>
+    <button id="smsBtn">Generate Invitation and send to SMS</button>
+  </div>
+
+  <script>
+    let selectedDate = "";
+
+    document.addEventListener("DOMContentLoaded", function () {
+      const todayBtn = document.getElementById("todayBtn");
+      const tomorrowBtn = document.getElementById("tomorrowBtn");
+      const whatsappBtn = document.getElementById("whatsappBtn");
+      const smsBtn = document.getElementById("smsBtn");
+      const savedVisitors = document.getElementById("savedVisitors");
+      const nameInput = document.getElementById("name");
+      const plateInput = document.getElementById("plate");
+
+      function selectDate(choice) {
+        const today = new Date();
+        if (choice === 'today') {
+          selectedDate = today.toISOString().split('T')[0];
+          todayBtn.classList.add("selected");
+          tomorrowBtn.classList.remove("selected");
+        } else {
+          const tmr = new Date();
+          tmr.setDate(today.getDate() + 1);
+          selectedDate = tmr.toISOString().split('T')[0];
+          tomorrowBtn.classList.add("selected");
+          todayBtn.classList.remove("selected");
+        }
+      }
+
+      function setDefaultDate() {
+        selectDate('today');
+      }
+
+      function createMessage(name, plate) {
+        return "Please show the guard at the visitors gate this message.\n" + name +
+               " has been granted access on " + selectedDate +
+               " to the estate with vehicle license plate number " + plate + ".";
+      }
+
+      function getInput() {
+        const name = nameInput.value.trim();
+        const plate = plateInput.value.trim().toUpperCase();
+        if (!name || !plate || !selectedDate) {
+          alert("Please fill in all fields.");
+          return null;
+        }
+        return { name, plate };
+      }
+
+      function sendWhatsApp() {
+        const input = getInput();
+        if (!input) return;
+        saveVisitor(input.name, input.plate);
+        highlightButton(whatsappBtn);
+        const msg = createMessage(input.name, input.plate);
+        const url = "https://wa.me/?text=" + encodeURIComponent(msg);
+        window.location.href = url;
+      }
+
+      function sendSMS() {
+        const input = getInput();
+        if (!input) return;
+        saveVisitor(input.name, input.plate);
+        highlightButton(smsBtn);
+        const msg = createMessage(input.name, input.plate);
+        const smsLink = "sms:?body=" + encodeURIComponent(msg);
+        window.location.href = smsLink;
+      }
+
+      function saveVisitor(name, plate) {
+        let visitors = JSON.parse(localStorage.getItem('visitors') || '{}');
+        visitors[name] = { plate: plate };
+        localStorage.setItem('visitors', JSON.stringify(visitors));
+        loadSavedVisitors();
+      }
+
+      function loadSavedVisitors() {
+        const saved = JSON.parse(localStorage.getItem('visitors') || '{}');
+        savedVisitors.innerHTML = '<option value="">-- Select --</option>';
+        Object.keys(saved).forEach(name => {
+          let opt = document.createElement("option");
+          opt.value = name;
+          opt.textContent = name;
+          savedVisitors.appendChild(opt);
+        });
+      }
+
+      function loadVisitor(name) {
+        const saved = JSON.parse(localStorage.getItem('visitors') || '{}');
+        if (saved[name]) {
+          nameInput.value = name;
+          plateInput.value = saved[name].plate;
+        }
+      }
+
+      function highlightButton(button) {
+        [whatsappBtn, smsBtn].forEach(btn => btn.classList.remove("selected"));
+        button.classList.add("selected");
+      }
+
+      todayBtn.addEventListener("click", () => selectDate('today'));
+      tomorrowBtn.addEventListener("click", () => selectDate('tomorrow'));
+      whatsappBtn.addEventListener("click", sendWhatsApp);
+      smsBtn.addEventListener("click", sendSMS);
+      savedVisitors.addEventListener("change", function() { loadVisitor(this.value); });
+
+      setDefaultDate();
+      loadSavedVisitors();
+    });
+  </script>
+</body>
+</html>
+
+</body>
+</html>
