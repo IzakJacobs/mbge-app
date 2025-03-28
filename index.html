@@ -121,15 +121,9 @@
 <body>
   <h2>MBGE Visitor Access</h2>
 
-  <label>Visitor's Name:</label>
-  <input type="text" id="name" placeholder="e.g. John Jones">
-
-  <div class="or-label">OR</div>
-
-  <label for="savedVisitors">Select Saved Visitor:</label>
-  <select id="savedVisitors">
-    <option value="">-- Select --</option>
-  </select>
+  <label for="name">Visitor's Name:</label>
+<input type="text" id="name" list="savedVisitors" placeholder="Type or select a name">
+<datalist id="savedVisitors"></datalist>
 
   <label>Visit Date:</label>
   <div class="date-select">
@@ -220,7 +214,17 @@
         loadSavedVisitors();
       }
 
-      function loadSavedVisitors() {
+      
+function loadSavedVisitors() {
+    const saved = JSON.parse(localStorage.getItem('visitors') || '{}');
+    const datalist = document.getElementById('savedVisitors');
+    datalist.innerHTML = '';
+    Object.keys(saved).forEach(name => {
+        let opt = document.createElement("option");
+        opt.value = name;
+        datalist.appendChild(opt);
+    });
+
         const saved = JSON.parse(localStorage.getItem('visitors') || '{}');
         savedVisitors.innerHTML = '<option value="">-- Select --</option>';
         Object.keys(saved).forEach(name => {
