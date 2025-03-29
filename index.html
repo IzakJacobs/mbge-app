@@ -1,0 +1,132 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login - MBGE Visitor Access</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #e9f0f5;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+    }
+    .login-container {
+      background: white;
+      padding: 30px 20px;
+      border-radius: 16px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+      width: 95%;
+      max-width: 400px;
+      text-align: center;
+    }
+    img {
+      width: 180px;
+      height: auto;
+      margin-bottom: 25px;
+    }
+    h2 {
+      margin-bottom: 20px;
+      font-size: 24px;
+      color: #003366;
+    }
+    input[type="email"] {
+      box-sizing: border-box;
+      max-width: 100%;
+      width: 100%;
+      padding: 14px;
+      margin: 10px 0;
+      font-size: 16px;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+    }
+    .pin-container {
+      display: flex;
+      justify-content: space-between;
+      margin: 10px 0 20px;
+    }
+    .pin-container input {
+      width: 40px;
+      height: 50px;
+      font-size: 24px;
+      text-align: center;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+    }
+    button {
+      width: 100%;
+      padding: 14px;
+      background: #007bff;
+      color: white;
+      font-size: 16px;
+      border: none;
+      border-radius: 8px;
+      margin-top: 15px;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #0056b3;
+    }
+    @media (max-width: 480px) {
+      h2 { font-size: 20px; }
+      img { width: 140px; }
+      .pin-container input {
+        width: 36px;
+        height: 45px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="login-container">
+    <img src="logo.png" alt="MBGE Logo">
+    <h2>Welcome Back</h2>
+    <input type="email" id="email" placeholder="Email address" required>
+    <div class="pin-container">
+      <input type="text" maxlength="1" pattern="[0-9]*" inputmode="numeric">
+      <input type="text" maxlength="1" pattern="[0-9]*" inputmode="numeric">
+      <input type="text" maxlength="1" pattern="[0-9]*" inputmode="numeric">
+      <input type="text" maxlength="1" pattern="[0-9]*" inputmode="numeric">
+      <input type="text" maxlength="1" pattern="[0-9]*" inputmode="numeric">
+      <input type="text" maxlength="1" pattern="[0-9]*" inputmode="numeric">
+    </div>
+    <button onclick="validateLogin()">Login</button>
+  </div>
+
+  <script>
+    function validateLogin() {
+      const email = document.getElementById('email').value;
+      const pinInputs = document.querySelectorAll('.pin-container input');
+      const pin = Array.from(pinInputs).map(input => input.value).join('');
+
+      const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+      if (!emailPattern.test(email)) {
+        alert("Please enter a valid email address.");
+        return;
+      }
+
+      if (pin.length !== 6 || !/^[0-9]{6}$/.test(pin)) {
+        alert("Please enter a 6-digit numeric PIN.");
+        return;
+      }
+
+      window.location.href = 'visitor.html';
+    }
+  
+    // Auto-focus to next box in PIN input
+    const pinInputs = document.querySelectorAll(".pin-container input");
+    pinInputs.forEach((input, index) => {
+      input.addEventListener("input", () => {
+        if (input.value.length === 1 && index < pinInputs.length - 1) {
+          pinInputs[index + 1].focus();
+        }
+      });
+    });
+    </script>
+</body>
+</html>
