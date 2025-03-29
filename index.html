@@ -114,10 +114,9 @@
       }
 
       function createMessage(name, plate, idnum) {
-        return "Please show the guard at the visitors gate this message.\n" + name +
-               " has been granted access on " + selectedDate +
+        return name + " has been granted access on " + selectedDate +
                " to the estate with vehicle license plate number " + plate + " and ID number " + idnum + "." + "\n\n" +
-               "QR Info: " + name + " - " + plate;
+               "QR Info: " + name + " - " + plate + " - " + idnum ;
       }
 
       function getInput() {
