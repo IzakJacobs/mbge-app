@@ -1,618 +1,556 @@
 <?php
 // ============================================================
-// GEMB Access Control — application_form.php (public)
-// One config-driven form for all four application types:
-//   application_form.php?type=contractor|to_let|tenant|pet
-// Resume a returned application:
-//   application_form.php?resume={token}
-// Conventions: PDO via db(), csrfField()/verifyCsrfToken() from layout.php.
+// GEMB Access Control — application_admin.php
+// Site Manager verification portal for the Application Engine.
+// Conventions identical to security.php: requireSecurity(),
+// csrfField()/verifyCsrfToken(), setFlash()/getFlash(),
+// pageHeader()/renderHeader()/pageFooter(), PDO via db().
+// Session: $_SESSION['security_id'], $_SESSION['security_name'].
 // ============================================================
 require_once __DIR__ . '/application_lib.php';
 if (session_status() === PHP_SESSION_NONE) session_start();
 
-$errors = [];
-$successRef = null;
+requireSecurity();   // same guard as every security.php action
 
-// ── Resolve type (or resume token) ────────────────────────
-$resumeApp = null;
-if (!empty($_GET['resume'])) {
-    $tok = appClean((string)$_GET['resume'], 64);
-    if (preg_match('/^[a-f0-9]{64}$/', $tok)) {
-        $stmt = db()->prepare(
-            "SELECT id, app_type, status, return_reason FROM applications
-             WHERE resume_token=? AND status IN ('draft','returned') LIMIT 1"
-        );
-        $stmt->execute([$tok]);
-        $resumeApp = $stmt->fetch();
-    }
-    if (!$resumeApp) { http_response_code(404); exit('Link expired or invalid.'); }
-    $type = $resumeApp['app_type'];
-} else {
-    $type = appClean((string)($_GET['type'] ?? ''), 20);
-}
-if (!isset(APP_TYPES[$type])) { http_response_code(404); exit('Unknown application type.'); }
-$cfg = APP_TYPES[$type];
+$managerId   = (int)($_SESSION['security_id'] ?? 0);
+$managerName = $_SESSION['security_name'] ?? 'Unknown';
 
-// ── Optional invite linkage (resident-invited Contractor Lead) ──
-// application_form.php?type=contractor&invite=766651
-// Links this application to the resident's invite so the approval bridge
-// inherits the erf/resident and supersedes the placeholder invite record.
-$invite = null;
-$inviteCode = preg_match('/^\d{6}$/', (string)($_REQUEST['invite'] ?? '')) ? $_REQUEST['invite'] : '';
-if ($type === 'contractor' && $inviteCode !== '') {
-    $stmt = db()->prepare(
-        "SELECT unique_code, resident_erfno, resident_name, service_name, company_name, id_number
-         FROM service_providers
-         WHERE unique_code = ? AND category = 'contractor_lead' AND expired = 0 LIMIT 1"
-    );
-    $stmt->execute([$inviteCode]);
-    $invite = $stmt->fetch() ?: null;
-}
-
-// ── Office-capture mode: the site manager completes the form at the
-//    security office with the contractor present. Detected from the
-//    active security session (same session as security.php).
-$officeMode = !empty($_SESSION['security_id']);
-$prefill = [
-    'applicant_name'  => $invite['service_name'] ?? '',
-    'applicant_id_no' => $invite['id_number'] ?? '',
-    'company_name'    => $invite['company_name'] ?? '',
-];
-
-// ── Handle submission ─────────────────────────────────────
+// ════════════════════════════════════════════════════════
+// POST ACTIONS
+// ════════════════════════════════════════════════════════
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verifyCsrfToken();
+    $appId  = (int)($_POST['app_id'] ?? 0);
+    $action = $_POST['app_action'] ?? '';
 
-    if (!appRateLimit('form_submit_' . $type, 5, 3600)) {
-        $errors[] = 'Too many submissions from this address. Please try again later.';
-    } else {
-
-        // ── Applicant fields ──
-        $applicantName  = appClean($_POST['applicant_name'] ?? '', 120);
-        $applicantIdNo  = appClean($_POST['applicant_id_no'] ?? '', 30);
-        $applicantEmail = filter_var((string)($_POST['applicant_email'] ?? ''), FILTER_VALIDATE_EMAIL) ?: '';
-        $applicantPhone = appClean($_POST['applicant_phone'] ?? '', 30);
-        $applicantIsTenant = !empty($_POST['applicant_is_tenant']) ? 1 : 0;
-        $erfNo   = strtoupper(appClean($_POST['erf_no'] ?? '', 10));
-        $regType = appClean($_POST['reg_type'] ?? '', 30);
-
-        if ($applicantName === '')  $errors[] = 'Applicant name is required.';
-        if ($applicantEmail === '') $errors[] = 'A valid e-mail address is required.';
-        if ($applicantPhone === '') $errors[] = 'A contact number is required.';
-        if ($cfg['requires_erf'] && $erfNo === '') $errors[] = 'Erf number is required.';
-        if (!empty($cfg['reg_types']) && !isset($cfg['reg_types'][$regType])) $errors[] = 'Please select a registration type.';
-
-        // ── Company block (contractor) ──
-        $companyName = $companyType = $companyRegNo = $companyOwner = null;
-        if (!empty($cfg['company_block'])) {
-            $companyName  = appClean($_POST['company_name'] ?? '', 150);
-            $companyType  = appClean($_POST['company_type'] ?? '', 60);
-            $companyRegNo = appClean($_POST['company_reg_no'] ?? '', 40);
-            $companyOwner = appClean($_POST['company_owner'] ?? '', 120);
-            if ($companyName === '')  $errors[] = 'Company name is required.';
-            if (!in_array($companyType, $cfg['company_types'], true)) $errors[] = 'Please select a valid company type.';
-            if ($companyRegNo === '') $errors[] = 'Company registration number / owner ID is required.';
+    // ── Save checklist results + payment verification ─────
+    if ($action === 'save_checks') {
+        $upd = db()->prepare(
+            "UPDATE application_checklist
+             SET result=?, comment=?, checked_by=?, checked_at=NOW()
+             WHERE id=? AND application_id=?"
+        );
+        foreach (($_POST['check'] ?? []) as $checkId => $result) {
+            if (!in_array($result, ['pending', 'pass', 'fail', 'n_a'], true)) continue;
+            $comment = appClean($_POST['comment'][(int)$checkId] ?? '', 500);
+            $upd->execute([$result, $comment, $managerId, (int)$checkId, $appId]);
         }
+        $pv = isset($_POST['payment_verified']) ? 1 : 0;
+        db()->prepare(
+            "UPDATE application_payments
+             SET verified=?, verified_by=IF(?=1, ?, NULL), verified_at=IF(?=1, NOW(), NULL)
+             WHERE application_id=?"
+        )->execute([$pv, $pv, $managerId, $pv, $appId]);
+        setFlash('success', 'Checklist saved.');
+        header('Location: application_admin.php?id=' . $appId); exit;
+    }
 
-        // ── Second party (owner co-sign) ──
-        $ownerName = $ownerIdNo = $ownerEmail = $ownerPhone = null;
-        $needsOwner = ($cfg['second_party'] === 'owner')
-                   || ($cfg['second_party'] === 'owner_if_tenant' && $applicantIsTenant);
-        if ($needsOwner) {
-            $ownerName  = appClean($_POST['owner_name'] ?? '', 120);
-            $ownerIdNo  = appClean($_POST['owner_id_no'] ?? '', 30);
-            $ownerEmail = filter_var((string)($_POST['owner_email'] ?? ''), FILTER_VALIDATE_EMAIL) ?: '';
-            $ownerPhone = appClean($_POST['owner_phone'] ?? '', 30);
-            if ($ownerName === '' || $ownerEmail === '') {
-                $errors[] = 'Owner name and e-mail are required so the owner can co-sign electronically.';
-            }
+    // ── Verify (blocked until every check is Pass or N/A) ──
+    if ($action === 'verify') {
+        if (!appChecklistComplete($appId)) {
+            setFlash('error', 'Cannot verify — outstanding checklist items remain. Every check must be Pass or N/A.');
+            header('Location: application_admin.php?id=' . $appId); exit;
         }
+        $stmt = db()->prepare("SELECT app_type FROM applications WHERE id=? LIMIT 1");
+        $stmt->execute([$appId]);
+        $appType = $stmt->fetchColumn();
+        $next = APP_TYPES[$appType]['post_verify_status'] ?? 'approved';
 
-        // ── Type-specific fields → JSON ──
-        $typeData = [];
-        if ($invite) $typeData['invite_code'] = $invite['unique_code'];   // resident invite linkage
-        foreach ($cfg['type_fields'] ?? [] as $key => $label) {
-            $typeData[$key] = appClean($_POST['tf_' . $key] ?? '', 120);
-            if ($typeData[$key] === '') $errors[] = $label . ' is required.';
-        }
-        if (in_array($type, ['tenant', 'to_let'], true)
-            && !empty($typeData['rental_from']) && !empty($typeData['rental_to'])
-            && $typeData['rental_to'] < $typeData['rental_from']) {
-            $errors[] = 'Rental period end date is before the start date.';
-        }
+        if (appSetStatus($appId, 'verified', 'site_manager', $managerId, 'checklist complete')) {
+            if ($next === 'induction_scheduled') {
+                // Contractor path — induction session before card issue
+                appSetStatus($appId, 'induction_scheduled', 'site_manager', $managerId, 'induction to be arranged');
+                // ── MAILER HOOK (induction): notify the contact person to
+                //    arrange the induction session, per the Status-Mark procedure.
+                //    Wire your existing mail routine here, e.g.:
+                //    appMailInduction($appId);
+                setFlash('success', 'Verified. Status: induction scheduled — arrange the induction session with the contact person.');
+            } else {
+                // Direct approval path (to_let / tenant / pet)
+                $conditions = appClean($_POST['approval_conditions'] ?? '', 2000);
+                db()->prepare(
+                    "UPDATE applications
+                     SET approved_by=?, approved_at=NOW(),
+                         approval_conditions=NULLIF(?, ''),
+                         valid_until=NULLIF(JSON_UNQUOTE(JSON_EXTRACT(type_data, '$.rental_to')), 'null')
+                     WHERE id=?"
+                )->execute([$managerId, $conditions, $appId]);
+                appSetStatus($appId, 'approved', 'site_manager', $managerId, 'approved after verification');
 
-        // ── Dependency: tenant requires current approved to_let ──
-        $linkedAppId = null;
-        if ($cfg['depends_on'] === 'to_let' && $erfNo !== '' && empty($errors)) {
-            $linkedAppId = appFindCurrentToLet($erfNo);
-            if ($linkedAppId === null) {
-                $errors[] = 'Erf ' . htmlspecialchars($erfNo) . ' does not have a current approved "Member Registration to Let". The owner must complete that registration first.';
-            }
-        }
-
-        // ── Pet pre-checks (rule 1.2.1) ──
-        if ($type === 'pet' && $erfNo !== '' && empty($errors) && appErfHasApprovedPet($erfNo)) {
-            $errors[] = 'An approved pet is already registered on this erf (Conduct Rule 1.2.1: one pet per erf).';
-        }
-
-        // ── Items (workers / occupants / vehicles / pet) ──
-        $items = [];
-        foreach ($cfg['items'] as $itemType => $itemCfg) {
-            $rows = $_POST['items'][$itemType] ?? [];
-            if (!is_array($rows)) $rows = [];
-            $count = 0;
-            foreach ($rows as $idx => $row) {
-                if (!is_array($row)) continue;
-                $clean = ['item_type' => $itemType, 'idx' => (int)$idx];
-                $blank = true;
-                foreach ($itemCfg['fields'] as $f) {
-                    $v = $row[$f] ?? '';
-                    $v = is_string($v) ? appClean($v, 120) : ($v ? '1' : '0');
-                    $clean[$f] = $v;
-                    if ($v !== '' && $v !== '0') $blank = false;
-                }
-                if ($blank) continue;
-                if (in_array('id_number', $itemCfg['fields'], true) && !empty($clean['id_number'])
-                    && empty($clean['id_is_passport']) && !appValidSaId($clean['id_number'])) {
-                    $errors[] = ucfirst($itemType) . ' #' . ($count + 1) . ': SA ID number fails validation (tick "passport" if not an SA ID).';
-                }
-                if ($itemType === 'pet' && isset($clean['pet_adult_weight_kg'])) {
-                    $w = (float)$clean['pet_adult_weight_kg'];
-                    if ($w <= 0) $errors[] = 'Adult breed weight is required.';
-                    if (stripos($clean['pet_species'] ?? '', 'dog') !== false && $w > APP_PET_MAX_KG) {
-                        $errors[] = 'Dogs with an adult breed weight above 15 kg are not permitted (rule 1.2.2).';
-                    }
-                }
-                $items[] = $clean;
-                $count++;
-            }
-            if ($count < ($itemCfg['min'] ?? 0)) $errors[] = 'At least ' . $itemCfg['min'] . ' ' . strtolower($itemCfg['label']) . ' entry is required.';
-            if ($count > ($itemCfg['max'] ?? 99)) $errors[] = 'A maximum of ' . $itemCfg['max'] . ' ' . strtolower($itemCfg['label']) . ' is allowed.';
-        }
-
-        // ── Acknowledgements: every clause must be ticked ──
-        foreach ($cfg['acks'] as $code => $text) {
-            if (empty($_POST['ack'][$code])) {
-                $errors[] = 'All undertakings must be acknowledged before submission.';
-                break;
-            }
-        }
-
-        // ── Persist (transaction) ──
-        if (empty($errors)) {
-            $pdo = db();
-            $pdo->beginTransaction();
-            try {
-                $ref            = appNewRef();
-                $resumeToken    = appSecureToken();
-                $ownerSignToken = $needsOwner ? appSecureToken() : null;
-                $typeDataJson   = $typeData ? json_encode($typeData, JSON_UNESCAPED_UNICODE) : null;
-
-                $pdo->prepare(
-                    "INSERT INTO applications
-                     (app_ref, app_type, reg_type, erf_no, linked_app_id, status,
-                      applicant_name, applicant_id_no, applicant_email, applicant_phone, applicant_is_tenant,
-                      company_name, company_type, company_reg_no, company_owner,
-                      owner_name, owner_id_no, owner_email, owner_phone, owner_sign_token,
-                      type_data, resume_token, submitted_at, submit_ip)
-                     VALUES (?,?,?,?,?,'submitted',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW(),?)"
-                )->execute([
-                    $ref, $type, ($regType !== '' ? $regType : null), ($erfNo !== '' ? $erfNo : null), $linkedAppId,
-                    $applicantName, $applicantIdNo, $applicantEmail, $applicantPhone, $applicantIsTenant,
-                    $companyName, $companyType, $companyRegNo, $companyOwner,
-                    $ownerName, $ownerIdNo, $ownerEmail, $ownerPhone, $ownerSignToken,
-                    $typeDataJson, $resumeToken, $_SERVER['REMOTE_ADDR'] ?? null,
-                ]);
-                $appId = (int)$pdo->lastInsertId();
-
-                appLog($appId, null, 'submitted', 'applicant', null, 'form_submit_' . $type);
-
-                // Items
-                $insItem = $pdo->prepare(
-                    "INSERT INTO application_items
-                     (application_id, item_type, first_name, surname, id_number, id_is_passport, is_asylum,
-                      email, vehicle_make, vehicle_reg, vehicle_colour,
-                      pet_name, pet_species, pet_breed, pet_size, pet_age, pet_adult_weight_kg)
-                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-                );
-                $itemIdMap = [];   // "itemType:idx" => db id, for matching uploads
-                foreach ($items as $it) {
-                    $insItem->execute([
-                        $appId, $it['item_type'],
-                        $it['first_name'] ?? null, $it['surname'] ?? null,
-                        $it['id_number'] ?? null, (int)($it['id_is_passport'] ?? 0), (int)($it['is_asylum'] ?? 0),
-                        $it['email'] ?? null,
-                        $it['vehicle_make'] ?? null, $it['vehicle_reg'] ?? null, $it['vehicle_colour'] ?? null,
-                        $it['pet_name'] ?? null, $it['pet_species'] ?? null, $it['pet_breed'] ?? null, $it['pet_size'] ?? null,
-                        $it['pet_age'] ?? null,
-                        (isset($it['pet_adult_weight_kg']) && $it['pet_adult_weight_kg'] !== '') ? (float)$it['pet_adult_weight_kg'] : null,
-                    ]);
-                    $itemIdMap[$it['item_type'] . ':' . $it['idx']] = (int)$pdo->lastInsertId();
-                }
-
-                // Per-item documents: docs[itemType][idx][docType]
-                foreach ($cfg['items'] as $itemType => $itemCfg) {
-                    foreach ($itemCfg['docs'] as $docType => $docCfg) {
-                        foreach ($itemIdMap as $key => $dbId) {
-                            [$kType, $kIdx] = explode(':', $key);
-                            if ($kType !== $itemType) continue;
-
-                            if (!empty($docCfg['required_if'])) {
-                                $row = $_POST['items'][$itemType][$kIdx] ?? [];
-                                $required = !empty($row[$docCfg['required_if']]);
-                            } else {
-                                $required = !empty($docCfg['required']);
-                            }
-
-                            $name = $_FILES['docs']['name'][$itemType][$kIdx][$docType] ?? '';
-                            if ($name === '' || $name === null) {
-                                if ($required) throw new RuntimeException(ucfirst($itemType) . ' #' . ((int)$kIdx + 1) . ': "' . $docCfg['label'] . '" is required.');
-                                continue;
-                            }
-                            $file = [
-                                'name'     => $_FILES['docs']['name'][$itemType][$kIdx][$docType],
-                                'type'     => $_FILES['docs']['type'][$itemType][$kIdx][$docType],
-                                'tmp_name' => $_FILES['docs']['tmp_name'][$itemType][$kIdx][$docType],
-                                'error'    => $_FILES['docs']['error'][$itemType][$kIdx][$docType],
-                                'size'     => $_FILES['docs']['size'][$itemType][$kIdx][$docType],
-                            ];
-                            $docDate = null;
-                            if (!empty($docCfg['needs_date'])) {
-                                $docDate = appClean($_POST['doc_date'][$itemType][$kIdx][$docType] ?? '', 10);
-                                if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $docDate)) {
-                                    throw new RuntimeException('Issue date is required for "' . $docCfg['label'] . '".');
-                                }
-                                if (!empty($docCfg['max_age_days'])
-                                    && (int)((time() - strtotime($docDate)) / 86400) > $docCfg['max_age_days']) {
-                                    throw new RuntimeException(ucfirst($itemType) . ' #' . ((int)$kIdx + 1) . ': police clearance is older than 6 months.');
-                                }
-                            }
-                            [$ok, $msg] = appStoreUpload($appId, $dbId, $docType, $file, $docDate);
-                            if (!$ok) throw new RuntimeException($docCfg['label'] . ': ' . $msg);
-                        }
-                    }
-                }
-
-                // Application-level documents
-                foreach ($cfg['app_docs'] as $docType => $docCfg) {
-                    $name = $_FILES['app_docs']['name'][$docType] ?? '';
-                    if ($name === '') {
-                        if (!empty($docCfg['required'])) throw new RuntimeException('"' . $docCfg['label'] . '" is required.');
-                        continue;
-                    }
-                    $file = [
-                        'name'     => $_FILES['app_docs']['name'][$docType],
-                        'type'     => $_FILES['app_docs']['type'][$docType],
-                        'tmp_name' => $_FILES['app_docs']['tmp_name'][$docType],
-                        'error'    => $_FILES['app_docs']['error'][$docType],
-                        'size'     => $_FILES['app_docs']['size'][$docType],
-                    ];
-                    [$ok, $msg] = appStoreUpload($appId, null, $docType, $file);
-                    if (!$ok) throw new RuntimeException($docCfg['label'] . ': ' . $msg);
-                }
-
-                // Payment record
-                if (!empty($cfg['payment'])) {
-                    $workerCount = 0;
-                    foreach ($items as $it) if ($it['item_type'] === 'worker') $workerCount++;
-                    if ($cfg['payment']['per'] === 'worker') {
-                        $due   = $cfg['payment']['amount'] * max(1, $workerCount);
-                        $basis = sprintf('R%.2f x %d worker(s)', $cfg['payment']['amount'], $workerCount);
+                // ═══ LIVE-TABLE BRIDGES (wired) ═══
+                if ($appType === 'tenant') {
+                    [$tenantId, $residentId, $vehicles] = appBridgeTenantToLive($appId, $managerName);
+                    if ($tenantId > 0) {
+                        setFlash('success', "Tenant approved and bridged to live records: tenants #{$tenantId}"
+                            . ($residentId > 0 ? ", resident occupant record created" : ", NOTE: no occupant code available on this erf — create the resident manually")
+                            . ", {$vehicles} vehicle(s) whitelisted for LPR.");
                     } else {
-                        $due   = $cfg['payment']['amount'];
-                        $basis = 'Per Letting Procedure tariff';
+                        setFlash('success', 'Tenant application approved. (Live records already existed for this application; nothing duplicated.)');
                     }
-                    $pdo->prepare(
-                        "INSERT INTO application_payments (application_id, amount_due, amount_basis) VALUES (?,?,?)"
-                    )->execute([$appId, $due, $basis]);
+                } elseif ($appType === 'pet') {
+                    $petId = appBridgePetToLive($appId, $managerName);
+                    setFlash('success', $petId > 0
+                        ? "Pet approved and recorded in the live pets register (#{$petId})."
+                        : 'Pet application approved. (Live record already existed; nothing duplicated.)');
+                } else {
+                    setFlash('success', 'Application verified and approved.');
                 }
-
-                // Acknowledgements (per clause, hashed, timestamped)
-                foreach ($cfg['acks'] as $code => $text) {
-                    appRecordAck($appId, $code, $text, 'applicant');
-                }
-
-                // Checklist for the site manager
-                appGenerateChecklist($appId, $type);
-
-                if (!$needsOwner) {
-                    appSetStatus($appId, 'pending_verification', 'system', null, 'no co-sign required');
-                }
-                // ── MAILER HOOK (owner co-sign): when $needsOwner is true the
-                //    application waits at 'submitted' until the owner confirms.
-                //    E-mail $ownerEmail the link (full URL, never shortened):
-                //    SITE_URL . '/application_cosign.php?token=' . $ownerSignToken
-                //    Wire your existing gemB mail routine here, e.g.:
-                //    appMailOwnerCosign($ownerEmail, $ownerName, $ref, $ownerSignToken);
-
-                $pdo->commit();
-                $successRef = $ref;
-
-                // ── Office capture: take the site manager straight to the
-                //    verification checklist instead of the public success page.
-                if ($officeMode) {
-                    setFlash('success', "Application {$successRef} captured. Work through the verification checklist below — Verify unlocks only when every item is Pass or N/A.");
-                    header('Location: application_admin.php?id=' . $appId); exit;
-                }
-            } catch (Throwable $e) {
-                $pdo->rollBack();
-                $errors[] = $e->getMessage();
             }
+        } else {
+            setFlash('error', 'Status change not permitted from the current state.');
         }
+        header('Location: application_admin.php?id=' . $appId); exit;
     }
+
+    // ── Contractor: induction done → approve + BRIDGE to live SPs ──
+    if ($action === 'approve_after_induction') {
+        if (appSetStatus($appId, 'approved', 'site_manager', $managerId, 'induction completed')) {
+            db()->prepare("UPDATE applications SET approved_by=?, approved_at=NOW() WHERE id=?")
+                ->execute([$managerId, $appId]);
+
+            // ═══ APPROVAL BRIDGE (wired) ═══
+            // Creates 1 contractor_lead (contact person, card permit) and one
+            // contractor_worker per verified worker (slip permit, linked to the
+            // lead), directly in the LIVE service_providers table with the same
+            // columns, '7XXXXX' codes and QR generation as security.php.
+            [$leadId, $workerCount] = appBridgeContractorToSp($appId, $managerName);
+
+            if ($leadId > 0) {
+                setFlash('success', "Induction confirmed — application approved. Bridged to live records: 1 contractor lead + {$workerCount} worker(s) created with QR codes. Print cards from SP Approvals.");
+            } else {
+                setFlash('success', 'Induction confirmed — application approved. (Live SP records already existed for this application; nothing duplicated.)');
+            }
+        } else {
+            setFlash('error', 'Status change not permitted from the current state.');
+        }
+        header('Location: application_admin.php?id=' . $appId); exit;
+    }
+
+    // ── Return for correction ──────────────────────────────
+    if ($action === 'return') {
+        $reason = appClean($_POST['return_reason'] ?? '', 2000);
+        if ($reason === '') {
+            setFlash('error', 'A reason is required when returning an application.');
+        } else {
+            db()->prepare("UPDATE applications SET return_reason=? WHERE id=?")->execute([$reason, $appId]);
+            appSetStatus($appId, 'returned', 'site_manager', $managerId, 'returned: ' . mb_substr($reason, 0, 200));
+
+            // ── MAILER HOOK (return): e-mail the applicant the deficiencies
+            //    plus their resume link. Token is already on the row:
+            //    $t = db()->prepare("SELECT applicant_email, resume_token FROM applications WHERE id=?");
+            //    $t->execute([$appId]); $row = $t->fetch();
+            //    Resume URL: SITE_URL . '/application_form.php?resume=' . $row['resume_token']
+            //    (full gemb.co.za URL — never through a shortener; token must arrive unmodified)
+            setFlash('success', 'Application returned to the applicant with the deficiencies listed.');
+        }
+        header('Location: application_admin.php?id=' . $appId); exit;
+    }
+
+    // ── Reject ─────────────────────────────────────────────
+    if ($action === 'reject') {
+        $reason = appClean($_POST['return_reason'] ?? '', 2000);
+        if ($reason === '') {
+            setFlash('error', 'A reason is required when rejecting an application.');
+        } else {
+            appSetStatus($appId, 'rejected', 'site_manager', $managerId, 'rejected: ' . mb_substr($reason, 0, 200));
+            setFlash('success', 'Application rejected.');
+        }
+        header('Location: application_admin.php?id=' . $appId); exit;
+    }
+
+    // ── Withdraw an approval (pet rule 1.3 / letting clause 6) ──
+    if ($action === 'withdraw_approval') {
+        $reason = appClean($_POST['withdraw_reason'] ?? '', 2000);
+        if (appSetStatus($appId, 'withdrawn', 'site_manager', $managerId, 'approval withdrawn: ' . mb_substr($reason, 0, 200))) {
+            // ═══ DEACTIVATION BRIDGE (wired) ═══ closes the linked live
+            // records too: tenants/pets → denied(+reason); tenant's resident
+            // row → inactive; their vehicles → active=0; contractor SPs → revoked.
+            appDeactivateBridged($appId, $reason !== '' ? $reason : 'Approval withdrawn by site manager');
+            setFlash('success', 'Approval withdrawn and linked live records deactivated.');
+        } else {
+            setFlash('error', 'Status change not permitted from the current state.');
+        }
+        header('Location: application_admin.php'); exit;
+    }
+
+    header('Location: application_admin.php'); exit;
 }
 
-function h(string $s): string { return htmlspecialchars($s, ENT_QUOTES, 'UTF-8'); }
-?>
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title><?= h($cfg['label']) ?> — GEMB</title>
-<style>
-:root { --navy:#1a2f5a; --teal:#1a8a8a; --bg:#f5f7fa; --line:#d7dee8; --err:#b00020; --ok:#1a7a3a; }
-* { box-sizing:border-box; }
-body { font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); margin:0; color:#222; }
-.wrap { max-width:820px; margin:0 auto; padding:16px; }
-header.gemb { background:var(--navy); color:#fff; padding:18px 16px; }
-header.gemb h1 { margin:0; font-size:1.25rem; }
-header.gemb .sub { color:#bcd; font-size:.85rem; margin-top:4px; }
-.card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:18px; margin:16px 0; }
-.card h2 { color:var(--navy); font-size:1.05rem; margin:0 0 12px; border-bottom:2px solid var(--teal); padding-bottom:6px; }
-label { display:block; font-size:.85rem; color:#444; margin:10px 0 4px; }
-input[type=text],input[type=email],input[type=date],input[type=number],select {
-  width:100%; padding:10px; border:1px solid var(--line); border-radius:6px; font-size:.95rem; }
-input:focus,select:focus { outline:2px solid var(--teal); border-color:var(--teal); }
-.row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-@media (max-width:600px){ .row { grid-template-columns:1fr; } }
-.itemblock { border:1px dashed var(--line); border-radius:8px; padding:12px; margin:10px 0; position:relative; }
-.itemblock .rm { position:absolute; top:8px; right:8px; background:none; border:none; color:var(--err); cursor:pointer; font-size:.85rem; }
-.addbtn { background:var(--teal); color:#fff; border:none; border-radius:6px; padding:10px 16px; cursor:pointer; font-size:.9rem; }
-.acks label { display:flex; gap:10px; align-items:flex-start; font-size:.88rem; margin:8px 0; cursor:pointer; }
-.acks input { margin-top:3px; flex-shrink:0; }
-.bank { background:#eef6f6; border-left:4px solid var(--teal); padding:12px; font-size:.9rem; white-space:pre-line; border-radius:0 6px 6px 0; }
-.submitbtn { background:var(--navy); color:#fff; border:none; border-radius:8px; padding:14px 28px; font-size:1rem; cursor:pointer; width:100%; }
-.submitbtn:hover { background:#24407a; }
-.errbox { background:#fdecec; border:1px solid var(--err); color:var(--err); border-radius:8px; padding:12px 16px; margin:16px 0; font-size:.9rem; }
-.okbox { background:#eaf7ee; border:1px solid var(--ok); color:var(--ok); border-radius:8px; padding:20px; margin:16px 0; text-align:center; }
-.okbox .ref { font-size:1.4rem; font-weight:700; letter-spacing:1px; }
-.note { font-size:.8rem; color:#666; margin-top:4px; }
-.retbox { background:#fff8e6; border:1px solid #d99; border-radius:8px; padding:12px; margin:16px 0; font-size:.9rem; }
-</style>
-</head>
-<body>
-<header class="gemb">
-  <div class="wrap">
-    <h1><?= $cfg['icon'] ?> <?= h($cfg['label']) ?></h1>
-    <div class="sub">Mossel Bay Golf Estate HOA · GEMB Access &amp; Governance Platform</div>
-  </div>
-</header>
-<div class="wrap">
+// ════════════════════════════════════════════════════════
+// DETAIL VIEW?
+// ════════════════════════════════════════════════════════
+$detailId = filter_var($_GET['id'] ?? 0, FILTER_VALIDATE_INT);
+$detail = null;
+if ($detailId) {
+    $stmt = db()->prepare("SELECT * FROM applications WHERE id=? LIMIT 1");
+    $stmt->execute([$detailId]);
+    $detail = $stmt->fetch();
+}
 
-<?php if ($successRef): ?>
-  <div class="okbox">
-    <p>Your application has been submitted successfully.</p>
-    <p class="ref"><?= h($successRef) ?></p>
-    <p><?php if ($type === 'contractor'): ?>Please keep this reference. The contact person will receive an e-mail to arrange an induction session once verification is complete.<?php elseif ($cfg['second_party']): ?>Please keep this reference. Where owner co-signature is required, the owner will receive an e-mail link to confirm before verification begins.<?php else: ?>Please keep this reference. You will be notified by e-mail once the site manager has verified your application.<?php endif; ?></p>
-  </div>
-<?php else: ?>
+// ════════════════════════════════════════════════════════
+// QUEUE VIEW
+// ════════════════════════════════════════════════════════
+if (!$detail) {
 
-<?php if ($resumeApp && $resumeApp['status'] === 'returned'): ?>
-  <div class="retbox"><strong>Returned for correction:</strong> <?= h((string)$resumeApp['return_reason']) ?><br>
-  <span class="note">Please complete the form again with the corrections and resubmit.</span></div>
-<?php endif; ?>
+    // Whitelist status filter — same pattern as security.php logs/approvals
+    $filter = $_GET['status'] ?? 'pending_verification';
+    if (!in_array($filter, array_merge(array_keys(APP_TRANSITIONS), ['all']), true)) {
+        $filter = 'pending_verification';
+    }
 
-<?php if ($errors): ?>
-  <div class="errbox"><strong>Please correct the following:</strong><ul>
-  <?php foreach ($errors as $e): ?><li><?= h($e) ?></li><?php endforeach; ?>
-  </ul></div>
-<?php endif; ?>
-
-<?php if ($officeMode): ?>
-  <div class="card" style="background:#f5f0ff;border-left:4px solid #8e44ad;">
-    <strong>🛡️ Office capture mode</strong>
-    <p class="note" style="margin:6px 0 0;">You are logged in as security. Complete this application with the contractor present at the office: verify each ID in person, upload the documents they bring, and tick each undertaking as the contractor confirms it. After submission, open it in Application Verification to work the checklist and approve.</p>
-  </div>
-<?php endif; ?>
-<?php if ($invite): ?>
-  <div class="card" style="background:#eef6f6;border-left:4px solid var(--teal);">
-    <strong>🏠 Linked to a resident invite</strong>
-    <p class="note" style="margin:6px 0 0;">Invited by <?= h($invite['resident_name'] ?? '') ?> (Erf <?= h($invite['resident_erfno'] ?? '') ?>) — invite reference <?= h($invite['unique_code']) ?>. On approval, access records will be linked to this resident.</p>
-  </div>
-<?php endif; ?>
-
-<form method="post" enctype="multipart/form-data" id="appform">
-<?= csrfField() ?>
-<?php if ($invite): ?><input type="hidden" name="invite" value="<?= h($invite['unique_code']) ?>"><?php endif; ?>
-
-<?php if (!empty($cfg['reg_types'])): ?>
-<div class="card">
-  <h2>Registration Type</h2>
-  <select name="reg_type" required>
-    <option value="">— Select —</option>
-    <?php foreach ($cfg['reg_types'] as $k => $v): ?>
-      <option value="<?= h($k) ?>"><?= h($v) ?></option>
-    <?php endforeach; ?>
-  </select>
-</div>
-<?php endif; ?>
-
-<div class="card">
-  <h2><?= $cfg['company_block'] ? 'Contact Person' : 'Applicant' ?></h2>
-  <div class="row">
-    <div><label>Full name *</label><input type="text" name="applicant_name" required maxlength="120" value="<?= h($prefill['applicant_name']) ?>"></div>
-    <div><label>ID number</label><input type="text" name="applicant_id_no" maxlength="30" value="<?= h($prefill['applicant_id_no']) ?>"></div>
-    <div><label>E-mail address *</label><input type="email" name="applicant_email" required maxlength="150"></div>
-    <div><label>Contact number *</label><input type="text" name="applicant_phone" required maxlength="30"></div>
-    <?php if ($cfg['requires_erf']): ?>
-      <div><label>Erf number *</label><input type="text" name="erf_no" required maxlength="10" style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase()"></div>
-    <?php endif; ?>
-    <?php if ($cfg['second_party'] === 'owner_if_tenant'): ?>
-      <div><label style="margin-top:28px"><input type="checkbox" name="applicant_is_tenant" value="1" id="isTenant"> I am a tenant (not the registered owner)</label></div>
-    <?php endif; ?>
-  </div>
-</div>
-
-<?php if (!empty($cfg['company_block'])): ?>
-<div class="card">
-  <h2>Company Details</h2>
-  <div class="row">
-    <div><label>Company name *</label><input type="text" name="company_name" required maxlength="150" value="<?= h($prefill['company_name']) ?>"></div>
-    <div><label>Company type *</label>
-      <select name="company_type" required><option value="">— Select —</option>
-      <?php foreach ($cfg['company_types'] as $ct): ?><option><?= h($ct) ?></option><?php endforeach; ?>
-      </select></div>
-    <div><label>Registration number / owner ID *</label><input type="text" name="company_reg_no" required maxlength="40"></div>
-    <div><label>Owner name *</label><input type="text" name="company_owner" required maxlength="120"></div>
-  </div>
-</div>
-<?php endif; ?>
-
-<?php if (!empty($cfg['type_fields'])): ?>
-<div class="card">
-  <h2>Property &amp; Period</h2>
-  <div class="row">
-  <?php foreach ($cfg['type_fields'] as $key => $label):
-        $isDate = str_contains($key, 'date') || str_contains($key, 'from') || str_contains($key, '_to'); ?>
-    <div><label><?= h($label) ?> *</label>
-      <input type="<?= $isDate ? 'date' : 'text' ?>" name="tf_<?= h($key) ?>" required maxlength="120"></div>
-  <?php endforeach; ?>
-  </div>
-</div>
-<?php endif; ?>
-
-<?php if ($cfg['second_party']): ?>
-<div class="card" id="ownerBlock" <?= $cfg['second_party'] === 'owner_if_tenant' ? 'style="display:none"' : '' ?>>
-  <h2>Registered Owner (co-signature required)</h2>
-  <p class="note">The owner will receive an e-mail link to electronically confirm this application before it is verified.</p>
-  <div class="row">
-    <div><label>Owner name *</label><input type="text" name="owner_name" maxlength="120"></div>
-    <div><label>Owner ID number</label><input type="text" name="owner_id_no" maxlength="30"></div>
-    <div><label>Owner e-mail *</label><input type="email" name="owner_email" maxlength="150"></div>
-    <div><label>Owner contact number</label><input type="text" name="owner_phone" maxlength="30"></div>
-  </div>
-</div>
-<?php endif; ?>
-
-<?php foreach ($cfg['items'] as $itemType => $itemCfg): ?>
-<div class="card">
-  <h2><?= h($itemCfg['label']) ?><?= ($itemCfg['max'] ?? 99) > 1 ? 's' : '' ?></h2>
-  <div id="items_<?= h($itemType) ?>"></div>
-  <?php if (($itemCfg['max'] ?? 99) > 1): ?>
-    <button type="button" class="addbtn" onclick="addItem('<?= h($itemType) ?>')">+ Add <?= h(strtolower($itemCfg['label'])) ?></button>
-  <?php endif; ?>
-</div>
-<?php endforeach; ?>
-
-<?php if (!empty($cfg['payment']) && $cfg['payment']['per'] === 'worker'): ?>
-<div class="card">
-  <h2>Payment</h2>
-  <p>The tariff is <strong>R<?= number_format($cfg['payment']['amount'], 2) ?> per worker</strong>. Total due: <strong id="payTotal">R<?= number_format($cfg['payment']['amount'], 2) ?></strong></p>
-  <div class="bank"><?= h($cfg['payment']['bank_details']) ?></div>
-</div>
-<?php elseif (!empty($cfg['payment'])): ?>
-<div class="card">
-  <h2>Payment</h2>
-  <div class="bank"><?= h($cfg['payment']['bank_details']) ?></div>
-</div>
-<?php endif; ?>
-
-<?php if (!empty($cfg['app_docs'])): ?>
-<div class="card">
-  <h2>Supporting Documents</h2>
-  <?php foreach ($cfg['app_docs'] as $docType => $docCfg): ?>
-    <label><?= h($docCfg['label']) ?><?= !empty($docCfg['required']) ? ' *' : '' ?></label>
-    <input type="file" name="app_docs[<?= h($docType) ?>]" accept=".pdf,.jpg,.jpeg,.png" <?= !empty($docCfg['required']) ? 'required' : '' ?>>
-    <p class="note">PDF, JPG or PNG, max 5 MB.</p>
-  <?php endforeach; ?>
-</div>
-<?php endif; ?>
-
-<div class="card acks">
-  <h2>Undertakings &amp; Acknowledgements</h2>
-  <p class="note">Each item must be acknowledged individually. Your acknowledgements are recorded with a timestamp per POPIA.</p>
-  <?php foreach ($cfg['acks'] as $code => $text): ?>
-    <label><input type="checkbox" name="ack[<?= h($code) ?>]" value="1" required> <?= h($text) ?></label>
-  <?php endforeach; ?>
-</div>
-
-<button type="submit" class="submitbtn">Submit Application</button>
-<p class="note" style="text-align:center">POPIA notice: information on this form is processed solely for the stated purpose and retained per the Estate's retention policy.</p>
-</form>
-
-<script>
-const ITEM_CFG = <?= json_encode(array_map(fn($c) => ['label' => $c['label'], 'fields' => $c['fields'], 'docs' => $c['docs'] ?? [], 'min' => $c['min'] ?? 0, 'max' => $c['max'] ?? 99], $cfg['items']), JSON_UNESCAPED_SLASHES) ?>;
-const TARIFF = <?= json_encode(!empty($cfg['payment']) && $cfg['payment']['per'] === 'worker' ? $cfg['payment']['amount'] : 0) ?>;
-const FIELD_LABELS = {first_name:'First name', surname:'Surname', id_number:'ID / passport number',
-  id_is_passport:'This is a passport (not SA ID)', is_asylum:'Asylum seeker (Home Affairs verification required)',
-  email:'E-mail address', vehicle_make:'Make', vehicle_reg:'Registration number', vehicle_colour:'Colour',
-  pet_name:'Pet name', pet_species:'Species', pet_breed:'Breed', pet_size:'Size', pet_age:'Age', pet_adult_weight_kg:'Adult breed weight (kg, max 15)'};
-let counters = {};
-
-function addItem(type) {
-  const cfg = ITEM_CFG[type];
-  const container = document.getElementById('items_' + type);
-  if (container.children.length >= cfg.max) return;
-  counters[type] = (counters[type] ?? -1) + 1;
-  const idx = counters[type];
-  const div = document.createElement('div');
-  div.className = 'itemblock';
-  let html = '';
-  if (cfg.max > 1) html += `<button type="button" class="rm" onclick="this.parentNode.remove(); updateTotal();">remove</button>`;
-  html += '<div class="row">';
-  for (const f of cfg.fields) {
-    const label = FIELD_LABELS[f] || f;
-    if (f === 'id_is_passport' || f === 'is_asylum') {
-      html += `<div><label style="margin-top:24px"><input type="checkbox" name="items[${type}][${idx}][${f}]" value="1"${f === 'is_asylum' ? ` onchange="toggleAsylum(this)"` : ''}> ${label}</label></div>`;
-    } else if (f === 'pet_adult_weight_kg') {
-      html += `<div><label>${label} *</label><input type="number" step="0.1" min="0.1" max="99" name="items[${type}][${idx}][${f}]" required></div>`;
+    if ($filter === 'all') {
+        $apps = db()->query(
+            "SELECT id, app_ref, app_type, applicant_name, company_name, erf_no, submitted_at, status
+             FROM applications ORDER BY submitted_at DESC LIMIT 200"
+        )->fetchAll();
     } else {
-      html += `<div><label>${label}${['first_name','surname','id_number','pet_name','pet_species','pet_breed','vehicle_make','vehicle_reg'].includes(f) ? ' *' : ''}</label><input type="text" name="items[${type}][${idx}][${f}]" maxlength="120"></div>`;
+        // Oldest first for work queues — first received = first served
+        $stmt = db()->prepare(
+            "SELECT id, app_ref, app_type, applicant_name, company_name, erf_no, submitted_at, status
+             FROM applications WHERE status=? ORDER BY submitted_at ASC LIMIT 200"
+        );
+        $stmt->execute([$filter]);
+        $apps = $stmt->fetchAll();
     }
-  }
-  html += '</div>';
-  for (const [docType, doc] of Object.entries(cfg.docs)) {
-    const cond = doc.required_if ? ` data-condoc="${doc.required_if}" style="display:none"` : '';
-    html += `<div${cond} class="docslot"><label>${doc.label}${doc.required ? ' *' : ''}</label>
-      <input type="file" name="docs[${type}][${idx}][${docType}]" accept=".pdf,.jpg,.jpeg,.png"${doc.required ? ' required' : ''}>`;
-    if (doc.needs_date) html += `<label>Issue date *</label><input type="date" name="doc_date[${type}][${idx}][${docType}]" required>`;
-    html += '</div>';
-  }
-  div.innerHTML = html;
-  container.appendChild(div);
-  updateTotal();
+
+    pageHeader('Applications', 'security');
+    renderHeader('📋 Application Verification', 'security.php?action=menu');
+    ?>
+    <div class="container">
+      <?= getFlash() ?>
+
+      <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
+        <?php foreach ([
+            'pending_verification' => '⏳ Pending',
+            'submitted'            => '✍️ Awaiting Co-sign',
+            'induction_scheduled'  => '🎓 Induction',
+            'returned'             => '↩️ Returned',
+            'approved'             => '✅ Approved',
+            'all'                  => '📋 All',
+        ] as $s => $label): ?>
+        <a href="application_admin.php?status=<?= $s ?>"
+           class="btn btn-sm <?= $filter === $s ? 'btn-primary' : 'btn-secondary' ?>"><?= $label ?></a>
+        <?php endforeach; ?>
+      </div>
+
+      <?php if (empty($apps)): ?>
+        <div class="card"><p style="color:#666;">No applications in this category.</p></div>
+      <?php endif; ?>
+
+      <?php foreach ($apps as $a):
+        $cfg = APP_TYPES[$a['app_type']] ?? null;
+        $statusColors = [
+            'pending_verification' => '#ffc107', 'submitted' => '#888',
+            'verified' => '#17a2b8', 'induction_scheduled' => '#17a2b8',
+            'approved' => '#28a745', 'returned' => '#e67e22',
+            'rejected' => '#dc3545', 'withdrawn' => '#dc3545', 'expired' => '#aaa',
+        ];
+        $col = $statusColors[$a['status']] ?? '#999';
+      ?>
+      <div class="card" style="border-left:4px solid <?= $col ?>">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <div>
+            <strong><?= $cfg ? $cfg['icon'] : '' ?> <?= htmlspecialchars($a['company_name'] ?: $a['applicant_name']) ?></strong>
+            <span style="color:#666;font-size:.82rem;margin-left:6px;"><?= htmlspecialchars($cfg['label'] ?? $a['app_type']) ?></span>
+            <div style="font-size:.8rem;color:#999;margin-top:2px;font-family:monospace;">
+              <?= htmlspecialchars($a['app_ref']) ?>
+              <?= $a['erf_no'] ? ' &nbsp;|&nbsp; Erf ' . htmlspecialchars($a['erf_no']) : '' ?>
+              &nbsp;|&nbsp; <?= $a['submitted_at'] ? date('d M Y H:i', strtotime($a['submitted_at'])) : '—' ?>
+            </div>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <span class="badge badge-<?= in_array($a['status'], ['approved']) ? 'success' : (in_array($a['status'], ['rejected', 'withdrawn', 'expired']) ? 'danger' : 'warning') ?>">
+              <?= str_replace('_', ' ', $a['status']) ?>
+            </span>
+            <a href="application_admin.php?id=<?= $a['id'] ?>" class="btn btn-primary btn-sm">Open</a>
+          </div>
+        </div>
+      </div>
+      <?php endforeach; ?>
+    </div>
+    <?php pageFooter(); exit; ?>
+<?php } // end queue
+
+// ════════════════════════════════════════════════════════
+// DETAIL / CHECKLIST VIEW
+// ════════════════════════════════════════════════════════
+$cfg      = APP_TYPES[$detail['app_type']];
+$typeData = $detail['type_data'] ? json_decode($detail['type_data'], true) : [];
+
+$stmt = db()->prepare("SELECT * FROM application_items WHERE application_id=? ORDER BY item_type, id");
+$stmt->execute([$detailId]);
+$items = $stmt->fetchAll();
+
+$stmt = db()->prepare("SELECT * FROM application_documents WHERE application_id=?");
+$stmt->execute([$detailId]);
+$docs = $stmt->fetchAll();
+$docsByItem = [];
+foreach ($docs as $d) $docsByItem[$d['item_id'] ?? 0][] = $d;
+
+$stmt = db()->prepare("SELECT * FROM application_checklist WHERE application_id=? ORDER BY item_id IS NULL DESC, item_id, id");
+$stmt->execute([$detailId]);
+$checks = $stmt->fetchAll();
+
+$stmt = db()->prepare("SELECT * FROM application_payments WHERE application_id=? LIMIT 1");
+$stmt->execute([$detailId]);
+$payment = $stmt->fetch();
+
+$stmt = db()->prepare("SELECT ack_code, acknowledged_by, acknowledged_at FROM application_acknowledgements WHERE application_id=? ORDER BY id");
+$stmt->execute([$detailId]);
+$acks = $stmt->fetchAll();
+
+$itemNames = [];
+foreach ($items as $it) {
+    $n = trim(($it['first_name'] ?? '') . ' ' . ($it['surname'] ?? ''));
+    if ($n === '') $n = $it['vehicle_reg'] ?? '';
+    if ($n === '' && !empty($it['pet_name'])) $n = $it['pet_name'] . ' — ' . ($it['pet_species'] ?? '') . ' (' . ($it['pet_breed'] ?? '') . ')';
+    if ($n === '') $n = $it['pet_species'] ? $it['pet_species'] . ' (' . ($it['pet_breed'] ?? '') . ')' : '';
+    $itemNames[$it['id']] = $n !== '' ? $n : ('#' . $it['id']);
 }
 
-function toggleAsylum(cb) {
-  const block = cb.closest('.itemblock');
-  block.querySelectorAll('[data-condoc="is_asylum"]').forEach(el => {
-    el.style.display = cb.checked ? '' : 'none';
-    const inp = el.querySelector('input[type=file]');
-    if (inp) inp.required = cb.checked;
-  });
+// ── Bridged live access records (approved contractor applications):
+//    the lead + workers created in service_providers by the approval
+//    bridge, so permits can be printed directly from this screen.
+$bridgedSps = [];
+if ($detail['status'] === 'approved' && $detail['app_type'] === 'contractor') {
+    try {
+        $bs = db()->prepare(
+            "SELECT id, category, service_name, permit_type, unique_code, expired
+             FROM service_providers
+             WHERE notes LIKE ? AND notes NOT LIKE '%Superseded%'
+             ORDER BY FIELD(category,'contractor_lead','contractor_worker'), id"
+        );
+        $bs->execute(['%[gemB ' . $detail['app_ref'] . ']%']);
+        $bridgedSps = $bs->fetchAll();
+    } catch (Exception $e) {
+        $bridgedSps = [];
+    }
 }
 
-function updateTotal() {
-  if (!TARIFF) return;
-  const n = Math.max(1, document.querySelectorAll('#items_worker .itemblock').length);
-  const el = document.getElementById('payTotal');
-  if (el) el.textContent = 'R' + (TARIFF * n).toFixed(2);
-}
+pageHeader('Application ' . $detail['app_ref'], 'security');
+renderHeader($cfg['icon'] . ' ' . htmlspecialchars($detail['app_ref']), 'application_admin.php');
+?>
+<div class="container">
+  <?= getFlash() ?>
 
-const isTenantCb = document.getElementById('isTenant');
-if (isTenantCb) {
-  isTenantCb.addEventListener('change', () => {
-    document.getElementById('ownerBlock').style.display = isTenantCb.checked ? '' : 'none';
-  });
-}
+  <!-- ── Application summary ─────────────────────────── -->
+  <div class="card">
+    <div class="card-title"><?= htmlspecialchars($cfg['label']) ?>
+      <span class="badge badge-<?= $detail['status'] === 'approved' ? 'success' : (in_array($detail['status'], ['rejected', 'withdrawn', 'expired']) ? 'danger' : 'warning') ?>" style="margin-left:8px;">
+        <?= str_replace('_', ' ', $detail['status']) ?>
+      </span>
+    </div>
+    <div class="table-wrap"><table>
+      <tr><td style="min-width:180px;color:#666;">Applicant</td>
+          <td><?= htmlspecialchars($detail['applicant_name']) ?> — <?= htmlspecialchars($detail['applicant_email'] ?? '') ?>, <?= htmlspecialchars($detail['applicant_phone'] ?? '') ?></td></tr>
+      <?php if ($detail['company_name']): ?>
+      <tr><td style="color:#666;">Company</td>
+          <td><?= htmlspecialchars($detail['company_name']) ?> · <?= htmlspecialchars($detail['company_type'] ?? '') ?> · Reg: <?= htmlspecialchars($detail['company_reg_no'] ?? '') ?> · Owner: <?= htmlspecialchars($detail['company_owner'] ?? '') ?></td></tr>
+      <?php endif; ?>
+      <?php if ($detail['erf_no']): ?>
+      <tr><td style="color:#666;">Erf</td><td><?= htmlspecialchars($detail['erf_no']) ?></td></tr>
+      <?php endif; ?>
+      <?php if ($detail['reg_type']): ?>
+      <tr><td style="color:#666;">Registration type</td><td><?= htmlspecialchars($cfg['reg_types'][$detail['reg_type']] ?? $detail['reg_type']) ?></td></tr>
+      <?php endif; ?>
+      <?php foreach ($typeData as $k => $v): ?>
+      <tr><td style="color:#666;"><?= htmlspecialchars($cfg['type_fields'][$k] ?? $k) ?></td><td><?= htmlspecialchars((string)$v) ?></td></tr>
+      <?php endforeach; ?>
+      <?php if ($detail['owner_name']): ?>
+      <tr><td style="color:#666;">Owner (co-sign)</td>
+          <td><?= htmlspecialchars($detail['owner_name']) ?> —
+          <?= $detail['owner_signed_at']
+              ? '<span style="color:#28a745;">✅ signed ' . htmlspecialchars($detail['owner_signed_at']) . '</span>'
+              : '<strong style="color:#e67e22;">⏳ not yet signed</strong>' ?></td></tr>
+      <?php endif; ?>
+      <?php if ($detail['linked_app_id']): ?>
+      <tr><td style="color:#666;">Linked to-let application</td><td>#<?= (int)$detail['linked_app_id'] ?></td></tr>
+      <?php endif; ?>
+      <tr><td style="color:#666;">Submitted</td><td><?= htmlspecialchars($detail['submitted_at'] ?? '—') ?></td></tr>
+      <?php if ($detail['return_reason']): ?>
+      <tr><td style="color:#666;">Last return reason</td><td style="color:#e67e22;"><?= htmlspecialchars($detail['return_reason']) ?></td></tr>
+      <?php endif; ?>
+    </table></div>
+  </div>
 
-// Seed one row per repeater on load
-for (const [type, cfg] of Object.entries(ITEM_CFG)) {
-  addItem(type);
-}
-</script>
+<?php if ($bridgedSps): ?>
+  <!-- ── Access records & permit printing (bridged live SPs) ─── -->
+  <div class="card" style="border-left:4px solid #28a745;">
+    <div class="card-title">🪪 Access Records &amp; Permits</div>
+    <p style="font-size:.85rem;color:#666;margin-top:0;">Created in the live access system by this application's approval. Print each permit here (photo is taken/uploaded on the print screen).</p>
+    <div class="table-wrap"><table>
+      <tr><th>Name</th><th>Type</th><th>Code</th><th>Permit</th></tr>
+      <?php foreach ($bridgedSps as $b): ?>
+      <tr>
+        <td><?= htmlspecialchars($b['service_name']) ?></td>
+        <td><?= $b['category'] === 'contractor_lead' ? '👷 Contractor Lead' : '🪖 Contractor Worker' ?></td>
+        <td style="font-family:monospace;"><strong><?= htmlspecialchars($b['unique_code']) ?></strong></td>
+        <td>
+          <?php if (!$b['expired']): ?>
+          <a href="permit_photo_upload.php?id=<?= (int)$b['id'] ?>&type=<?= $b['permit_type'] === 'card' ? 'card' : 'slip' ?>"
+             target="_blank" class="btn btn-primary btn-sm">
+            🖨️ <?= $b['permit_type'] === 'card' ? 'Print Card' : 'Print Slip' ?>
+          </a>
+          <?php else: ?>
+          <span class="badge badge-muted">revoked</span>
+          <?php endif; ?>
+        </td>
+      </tr>
+      <?php endforeach; ?>
+    </table></div>
+  </div>
 <?php endif; ?>
+
+  <!-- ── Items + per-item documents ──────────────────── -->
+  <?php if (!empty($items)): ?>
+  <div class="card">
+    <div class="card-title">Items</div>
+    <?php foreach ($items as $it): ?>
+    <div style="padding:8px 0;border-bottom:1px solid #eee;">
+      <strong><?= htmlspecialchars(ucfirst($it['item_type'])) ?>:</strong>
+      <?= htmlspecialchars($itemNames[$it['id']]) ?>
+      <?php if ($it['id_number']): ?>
+        <span style="font-size:.85rem;color:#666;">· ID: <?= htmlspecialchars($it['id_number']) ?><?= $it['id_is_passport'] ? ' (passport)' : '' ?></span>
+        <?php if ($it['is_asylum']): ?><span class="badge badge-warning" style="font-size:.72rem;">ASYLUM — HA verification required</span><?php endif; ?>
+      <?php endif; ?>
+      <?php if ($it['pet_adult_weight_kg'] !== null): ?>
+        <span style="font-size:.85rem;color:#666;">· Adult weight: <?= htmlspecialchars((string)$it['pet_adult_weight_kg']) ?> kg</span>
+      <?php endif; ?>
+      <?php foreach ($docsByItem[$it['id']] ?? [] as $d): ?>
+        <div style="font-size:.85rem;margin-top:3px;">
+          📎 <?= htmlspecialchars($d['doc_type']) ?>:
+          <a href="application_doc.php?id=<?= (int)$d['id'] ?>" target="_blank"><?= htmlspecialchars($d['orig_filename']) ?></a>
+          <span style="color:#999;">(<?= number_format($d['file_size'] / 1024) ?> KB<?= $d['doc_date'] ? ', issued ' . htmlspecialchars($d['doc_date']) : '' ?>)</span>
+        </div>
+      <?php endforeach; ?>
+    </div>
+    <?php endforeach; ?>
+  </div>
+  <?php endif; ?>
+
+  <?php if (!empty($docsByItem[0])): ?>
+  <div class="card">
+    <div class="card-title">Application Documents</div>
+    <?php foreach ($docsByItem[0] as $d): ?>
+      <div style="font-size:.88rem;padding:4px 0;">
+        📎 <?= htmlspecialchars($d['doc_type']) ?>:
+        <a href="application_doc.php?id=<?= (int)$d['id'] ?>" target="_blank"><?= htmlspecialchars($d['orig_filename']) ?></a>
+        <span style="color:#999;">(<?= number_format($d['file_size'] / 1024) ?> KB)</span>
+      </div>
+    <?php endforeach; ?>
+  </div>
+  <?php endif; ?>
+
+  <div class="card">
+    <div class="card-title">Acknowledgements (<?= count($acks) ?> recorded)</div>
+    <div style="font-size:.8rem;color:#666;">
+      <?php foreach ($acks as $a): ?>
+        ✔ <?= htmlspecialchars($a['ack_code']) ?>
+        <span style="color:#999;">(<?= htmlspecialchars($a['acknowledged_by']) ?>, <?= htmlspecialchars($a['acknowledged_at']) ?>)</span><br>
+      <?php endforeach; ?>
+    </div>
+  </div>
+
+  <!-- ── Checklist + actions ─────────────────────────── -->
+  <form method="POST" action="application_admin.php">
+    <?= csrfField() ?>
+    <input type="hidden" name="app_id" value="<?= (int)$detailId ?>">
+
+    <?php if ($payment): ?>
+    <div class="card">
+      <div class="card-title">Payment</div>
+      <p style="font-size:.9rem;">Amount due: <strong>R<?= number_format((float)$payment['amount_due'], 2) ?></strong>
+         <span style="color:#666;">(<?= htmlspecialchars($payment['amount_basis'] ?? '') ?>)</span></p>
+      <label style="display:flex;align-items:center;gap:8px;font-size:.9rem;cursor:pointer;">
+        <input type="checkbox" name="payment_verified" value="1" <?= $payment['verified'] ? 'checked' : '' ?>>
+        Payment received and verified against the bank statement
+      </label>
+    </div>
+    <?php endif; ?>
+
+    <div class="card">
+      <div class="card-title">Verification Checklist</div>
+      <div class="table-wrap"><table>
+        <tr><th style="width:42%;">Check</th><th style="width:16%;">Result</th><th>Comment (required on Fail)</th></tr>
+        <?php foreach ($checks as $c): ?>
+        <tr>
+          <td style="font-size:.87rem;">
+            <?= $c['item_id'] ? '<em>' . htmlspecialchars($itemNames[$c['item_id']] ?? '#') . ':</em> ' : '' ?>
+            <?= htmlspecialchars($c['check_label']) ?>
+          </td>
+          <td>
+            <select name="check[<?= (int)$c['id'] ?>]"
+                    style="padding:6px;border:1px solid #dee2e6;border-radius:6px;
+                           background:<?= $c['result'] === 'pass' ? '#e8f8ee' : ($c['result'] === 'fail' ? '#fdecec' : '#fff') ?>;">
+              <?php foreach (['pending' => '— pending —', 'pass' => '✅ Pass', 'fail' => '❌ Fail', 'n_a' => 'N/A'] as $v => $l): ?>
+                <option value="<?= $v ?>" <?= $c['result'] === $v ? 'selected' : '' ?>><?= $l ?></option>
+              <?php endforeach; ?>
+            </select>
+          </td>
+          <td><input type="text" name="comment[<?= (int)$c['id'] ?>]"
+                     value="<?= htmlspecialchars($c['comment'] ?? '') ?>" maxlength="500"
+                     style="width:100%;padding:6px;border:1px solid #dee2e6;border-radius:6px;font-size:.85rem;"></td>
+        </tr>
+        <?php endforeach; ?>
+      </table></div>
+
+      <?php if (!empty($cfg['approval_conditions_field'])): ?>
+      <div class="form-group" style="margin-top:12px;">
+        <label>Approval remarks / conditions (recorded on the approval, per the pet form)</label>
+        <textarea name="approval_conditions" rows="2"
+                  style="width:100%;padding:8px;border:1px solid #dee2e6;border-radius:6px;"><?= htmlspecialchars($detail['approval_conditions'] ?? '') ?></textarea>
+      </div>
+      <?php endif; ?>
+
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;">
+        <button type="submit" name="app_action" value="save_checks" class="btn btn-primary">💾 Save Checklist</button>
+        <?php if ($detail['status'] === 'pending_verification'): ?>
+        <button type="submit" name="app_action" value="verify" class="btn btn-success"
+                onclick="return confirm('Confirm: all checklist items pass and this application is verified?')">
+          ✅ Verify<?= $cfg['post_verify_status'] === 'approved' ? ' & Approve' : '' ?>
+        </button>
+        <?php endif; ?>
+        <?php if ($detail['status'] === 'induction_scheduled'): ?>
+        <button type="submit" name="app_action" value="approve_after_induction" class="btn btn-success"
+                onclick="return confirm('Confirm induction completed? This approves the application and creates the live contractor lead + worker records with QR codes.')">
+          🎓 Induction Done → Approve & Create Access Records
+        </button>
+        <?php endif; ?>
+      </div>
+    </div>
+
+    <?php if ($detail['status'] === 'pending_verification'): ?>
+    <div class="card" style="border-left:4px solid #e67e22;">
+      <div class="card-title">↩️ Return or ❌ Reject</div>
+      <div class="form-group">
+        <label>Reason (sent to the applicant)</label>
+        <textarea name="return_reason" rows="3"
+                  placeholder="List the specific deficiencies, e.g. Worker 2: police clearance older than 6 months."
+                  style="width:100%;padding:8px;border:1px solid #dee2e6;border-radius:6px;"></textarea>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <button type="submit" name="app_action" value="return" class="btn btn-warning"
+                onclick="return confirm('Return this application for correction?')">↩️ Return for Correction</button>
+        <button type="submit" name="app_action" value="reject" class="btn btn-danger"
+                onclick="return confirm('Permanently reject this application?')">❌ Reject</button>
+      </div>
+    </div>
+    <?php endif; ?>
+
+    <?php if ($detail['status'] === 'approved'): ?>
+    <div class="card" style="border-left:4px solid #dc3545;">
+      <div class="card-title">🚫 Withdraw Approval</div>
+      <p style="font-size:.85rem;color:#666;">For breach of conditions (pet rule 1.3, letting clause 6).</p>
+      <div class="form-group">
+        <textarea name="withdraw_reason" rows="2" placeholder="Reason for withdrawal"
+                  style="width:100%;padding:8px;border:1px solid #dee2e6;border-radius:6px;"></textarea>
+      </div>
+      <button type="submit" name="app_action" value="withdraw_approval" class="btn btn-danger"
+              onclick="return confirm('Withdraw this approval? This cannot be undone.')">Withdraw Approval</button>
+    </div>
+    <?php endif; ?>
+  </form>
+
+  <div class="popia-notice">Verification actions are permanently logged per POPIA §11.</div>
 </div>
-</body>
-</html>
+<?php pageFooter(); ?>
