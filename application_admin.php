@@ -262,6 +262,9 @@ if (!$detail) {
             <span class="badge badge-<?= in_array($a['status'], ['approved']) ? 'success' : (in_array($a['status'], ['rejected', 'withdrawn', 'expired']) ? 'danger' : 'warning') ?>">
               <?= str_replace('_', ' ', $a['status']) ?>
             </span>
+            <?php if ($a['status'] === 'approved' && $a['app_type'] === 'contractor'): ?>
+            <a href="application_admin.php?id=<?= $a['id'] ?>" class="btn btn-success btn-sm">🪪 Permits</a>
+            <?php endif; ?>
             <a href="application_admin.php?id=<?= $a['id'] ?>" class="btn btn-primary btn-sm">Open</a>
           </div>
         </div>
@@ -306,6 +309,25 @@ foreach ($items as $it) {
     if ($n === '' && !empty($it['pet_name'])) $n = $it['pet_name'] . ' — ' . ($it['pet_species'] ?? '') . ' (' . ($it['pet_breed'] ?? '') . ')';
     if ($n === '') $n = $it['pet_species'] ? $it['pet_species'] . ' (' . ($it['pet_breed'] ?? '') . ')' : '';
     $itemNames[$it['id']] = $n !== '' ? $n : ('#' . $it['id']);
+}
+
+// ── Bridged live access records (approved contractor applications):
+//    the lead + workers created in service_providers by the approval
+//    bridge, so permits can be printed directly from this screen.
+$bridgedSps = [];
+if ($detail['status'] === 'approved' && $detail['app_type'] === 'contractor') {
+    try {
+        $bs = db()->prepare(
+            "SELECT id, category, service_name, permit_type, unique_code, expired
+             FROM service_providers
+             WHERE notes LIKE ? AND notes NOT LIKE '%Superseded%'
+             ORDER BY FIELD(category,'contractor_lead','contractor_worker'), id"
+        );
+        $bs->execute(['%[gemB ' . $detail['app_ref'] . ']%']);
+        $bridgedSps = $bs->fetchAll();
+    } catch (Exception $e) {
+        $bridgedSps = [];
+    }
 }
 
 pageHeader('Application ' . $detail['app_ref'], 'security');
@@ -353,6 +375,34 @@ renderHeader($cfg['icon'] . ' ' . htmlspecialchars($detail['app_ref']), 'applica
       <?php endif; ?>
     </table></div>
   </div>
+
+<?php if ($bridgedSps): ?>
+  <!-- ── Access records & permit printing (bridged live SPs) ─── -->
+  <div class="card" style="border-left:4px solid #28a745;">
+    <div class="card-title">🪪 Access Records &amp; Permits</div>
+    <p style="font-size:.85rem;color:#666;margin-top:0;">Created in the live access system by this application's approval. Print each permit here (photo is taken/uploaded on the print screen).</p>
+    <div class="table-wrap"><table>
+      <tr><th>Name</th><th>Type</th><th>Code</th><th>Permit</th></tr>
+      <?php foreach ($bridgedSps as $b): ?>
+      <tr>
+        <td><?= htmlspecialchars($b['service_name']) ?></td>
+        <td><?= $b['category'] === 'contractor_lead' ? '👷 Contractor Lead' : '🪖 Contractor Worker' ?></td>
+        <td style="font-family:monospace;"><strong><?= htmlspecialchars($b['unique_code']) ?></strong></td>
+        <td>
+          <?php if (!$b['expired']): ?>
+          <a href="permit_photo_upload.php?id=<?= (int)$b['id'] ?>&type=<?= $b['permit_type'] === 'card' ? 'card' : 'slip' ?>"
+             target="_blank" class="btn btn-primary btn-sm">
+            🖨️ <?= $b['permit_type'] === 'card' ? 'Print Card' : 'Print Slip' ?>
+          </a>
+          <?php else: ?>
+          <span class="badge badge-muted">revoked</span>
+          <?php endif; ?>
+        </td>
+      </tr>
+      <?php endforeach; ?>
+    </table></div>
+  </div>
+<?php endif; ?>
 
   <!-- ── Items + per-item documents ──────────────────── -->
   <?php if (!empty($items)): ?>
