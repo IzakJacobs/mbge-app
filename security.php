@@ -222,6 +222,9 @@ requireSecurity();
 // ── Change 1: badge counts only pending approvals that
 //    need security action (not already approved/expired)
 // ── Change 3: Helpdesk icon added
+// ── Change 4: Applications button added (gemB Application
+//    Engine — verification of contractor/to-let/tenant/pet
+//    applications by the site manager)
 // ════════════════════════════════════════════════════════
 if ($action === 'menu') {
     // Count SP records genuinely awaiting security approval:
@@ -253,6 +256,16 @@ if ($action === 'menu') {
         $openTickets = 0;
     }
 
+    // Applications awaiting site manager action (Application Engine)
+    try {
+        $pendingApps = db()->query(
+            "SELECT COUNT(*) FROM applications
+             WHERE status IN ('pending_verification','induction_scheduled')"
+        )->fetchColumn();
+    } catch (Exception $e) {
+        $pendingApps = 0;   // engine tables not installed yet — button still works
+    }
+
     pageHeader('Security Menu', 'security');
     renderHeader('🛡️ Security — ' . ($_SESSION['security_name'] ?? ''), 'logout.php');
     ?>
@@ -263,6 +276,12 @@ if ($action === 'menu') {
           <span class="icon">✅</span>SP Approvals
           <?php if ($pending > 0): ?>
             <span class="badge badge-warning"><?= $pending ?></span>
+          <?php endif; ?>
+        </a>
+        <a href="application_admin.php" class="menu-btn">
+          <span class="icon">📋</span>Applications
+          <?php if ($pendingApps > 0): ?>
+            <span class="badge badge-warning"><?= $pendingApps ?></span>
           <?php endif; ?>
         </a>
         <a href="security.php?action=sp_add"        class="menu-btn"><span class="icon">➕</span>Invite Resident SP</a>
@@ -996,6 +1015,10 @@ if ($action === 'sp_add') {
 // SP APPROVALS
 // ── Change 2: pending count = genuinely awaiting approval
 // ── Change 3: ORDER BY created_at ASC (oldest first)
+// ── Change 5: Contractor Leads must be approved via the
+//    Application Engine (application_admin.php). Direct
+//    Approve is blocked server-side and the button is
+//    replaced with "Capture Application".
 // ════════════════════════════════════════════════════════
 if ($action === 'approvals') {
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -1004,6 +1027,23 @@ if ($action === 'approvals') {
         $act = $_POST['sp_action'];
 
         if ($act === 'approve') {
+            // ── Engine enforcement: Contractor Leads must come through
+            //    the Application Verification process. Records created BY
+            //    the engine carry '[gemB APP-' in notes and are born
+            //    approved, so this only blocks raw invite placeholders.
+            $guard = db()->prepare("SELECT category, notes FROM service_providers WHERE id=? LIMIT 1");
+            $guard->execute([$id]);
+            $guardRow = $guard->fetch();
+            if ($guardRow
+                && $guardRow['category'] === 'contractor_lead'
+                && strpos($guardRow['notes'] ?? '', '[gemB APP-') === false) {
+                setFlash('error',
+                    'Contractor Leads cannot be approved directly. Use "Capture Application" to complete the '
+                    . 'contractor application (worker documents, police clearances, payment, induction) — approval '
+                    . 'happens in Application Verification once every checklist item passes.');
+                header('Location: security.php?action=approvals'); exit;
+            }
+
             db()->prepare(
                 "UPDATE service_providers SET approved='true', approved_by=?, approved_at=NOW() WHERE id=?"
             )->execute([$_SESSION['security_name'], $id]);
@@ -1156,12 +1196,18 @@ if ($action === 'approvals') {
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
             <span class="badge badge-<?= $isExpired?'muted':($isApproved?'success':'warning') ?>"><?= $statusLabel ?></span>
             <?php if (!$isApproved && !$isExpired): ?>
-            <form method="POST" style="display:inline">
-              <?= csrfField() ?>
-              <input type="hidden" name="sp_id" value="<?= $sp['id'] ?>">
-              <input type="hidden" name="sp_action" value="approve">
-              <button class="btn btn-success btn-sm">Approve</button>
-            </form>
+              <?php if (($sp['category'] ?? '') === 'contractor_lead'
+                        && strpos($sp['notes'] ?? '', '[gemB APP-') === false): ?>
+              <a href="application_form.php?type=contractor&invite=<?= urlencode($sp['unique_code'] ?? '') ?>"
+                 class="btn btn-primary btn-sm">📋 Capture Application</a>
+              <?php else: ?>
+              <form method="POST" style="display:inline">
+                <?= csrfField() ?>
+                <input type="hidden" name="sp_id" value="<?= $sp['id'] ?>">
+                <input type="hidden" name="sp_action" value="approve">
+                <button class="btn btn-success btn-sm">Approve</button>
+              </form>
+              <?php endif; ?>
             <?php endif; ?>
             <?php if ($isApproved && !$isExpired): ?>
             
@@ -1811,4 +1857,3 @@ function generateSpQr(int $spId): void {
         db()->prepare("UPDATE service_providers SET qrcode=? WHERE id=?")->execute(['/temp/'.$code.'.png', $spId]);
     }
 }
-
