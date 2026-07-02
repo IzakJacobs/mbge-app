@@ -59,6 +59,16 @@ $prefill = [
     'company_name'    => $invite['company_name'] ?? '',
 ];
 
+// ── Sticky form values: when validation fails, every field repopulates
+//    from the submitted POST so nothing has to be retyped. (Browsers do
+//    not allow re-attaching files, so uploads must be re-selected.)
+$sticky = false;   // set true after a failed POST, before rendering
+function oldv(string $key, string $default = ''): string {
+    global $sticky;
+    if ($sticky && isset($_POST[$key]) && is_string($_POST[$key])) return $_POST[$key];
+    return $default;
+}
+
 // ── Handle submission ─────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verifyCsrfToken();
@@ -342,6 +352,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
+$sticky = ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($errors));
+
 if (!function_exists('h')) {
     function h(string $s): string { return htmlspecialchars($s, ENT_QUOTES, 'UTF-8'); }
 }
@@ -408,7 +420,9 @@ input:focus,select:focus { outline:2px solid var(--teal); border-color:var(--tea
 <?php if ($errors): ?>
   <div class="errbox"><strong>Please correct the following:</strong><ul>
   <?php foreach ($errors as $e): ?><li><?= h($e) ?></li><?php endforeach; ?>
-  </ul></div>
+  </ul>
+  <p class="note" style="color:var(--err);margin:8px 0 0;"><strong>Your information has been kept</strong> — correct the items above and submit again. For security reasons the browser cannot keep attached files, so please <strong>re-select any uploaded documents</strong> before submitting.</p>
+  </div>
 <?php endif; ?>
 
 <?php if ($officeMode): ?>
@@ -434,7 +448,7 @@ input:focus,select:focus { outline:2px solid var(--teal); border-color:var(--tea
   <select name="reg_type" required>
     <option value="">— Select —</option>
     <?php foreach ($cfg['reg_types'] as $k => $v): ?>
-      <option value="<?= h($k) ?>"><?= h($v) ?></option>
+      <option value="<?= h($k) ?>" <?= oldv('reg_type') === $k ? 'selected' : '' ?>><?= h($v) ?></option>
     <?php endforeach; ?>
   </select>
 </div>
@@ -443,15 +457,15 @@ input:focus,select:focus { outline:2px solid var(--teal); border-color:var(--tea
 <div class="card">
   <h2><?= $cfg['company_block'] ? 'Contact Person' : 'Applicant' ?></h2>
   <div class="row">
-    <div><label>Full name *</label><input type="text" name="applicant_name" required maxlength="120" value="<?= h($prefill['applicant_name']) ?>"></div>
-    <div><label>ID number</label><input type="text" name="applicant_id_no" maxlength="30" value="<?= h($prefill['applicant_id_no']) ?>"></div>
-    <div><label>E-mail address *</label><input type="email" name="applicant_email" required maxlength="150"></div>
-    <div><label>Contact number *</label><input type="text" name="applicant_phone" required maxlength="30"></div>
+    <div><label>Full name *</label><input type="text" name="applicant_name" required maxlength="120" value="<?= h(oldv('applicant_name', $prefill['applicant_name'])) ?>"></div>
+    <div><label>ID number</label><input type="text" name="applicant_id_no" maxlength="30" value="<?= h(oldv('applicant_id_no', $prefill['applicant_id_no'])) ?>"></div>
+    <div><label>E-mail address *</label><input type="email" name="applicant_email" required maxlength="150" value="<?= h(oldv('applicant_email')) ?>"></div>
+    <div><label>Contact number *</label><input type="text" name="applicant_phone" required maxlength="30" value="<?= h(oldv('applicant_phone')) ?>"></div>
     <?php if ($cfg['requires_erf']): ?>
-      <div><label>Erf number *</label><input type="text" name="erf_no" required maxlength="10" style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase()"></div>
+      <div><label>Erf number *</label><input type="text" name="erf_no" required maxlength="10" style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase()" value="<?= h(oldv('erf_no')) ?>"></div>
     <?php endif; ?>
     <?php if ($cfg['second_party'] === 'owner_if_tenant'): ?>
-      <div><label style="margin-top:28px"><input type="checkbox" name="applicant_is_tenant" value="1" id="isTenant"> I am a tenant (not the registered owner)</label></div>
+      <div><label style="margin-top:28px"><input type="checkbox" name="applicant_is_tenant" value="1" id="isTenant" <?= $sticky && !empty($_POST['applicant_is_tenant']) ? 'checked' : '' ?>> I am a tenant (not the registered owner)</label></div>
     <?php endif; ?>
   </div>
 </div>
@@ -460,13 +474,13 @@ input:focus,select:focus { outline:2px solid var(--teal); border-color:var(--tea
 <div class="card">
   <h2>Company Details</h2>
   <div class="row">
-    <div><label>Company name *</label><input type="text" name="company_name" required maxlength="150" value="<?= h($prefill['company_name']) ?>"></div>
+    <div><label>Company name *</label><input type="text" name="company_name" required maxlength="150" value="<?= h(oldv('company_name', $prefill['company_name'])) ?>"></div>
     <div><label>Company type *</label>
       <select name="company_type" required><option value="">— Select —</option>
-      <?php foreach ($cfg['company_types'] as $ct): ?><option><?= h($ct) ?></option><?php endforeach; ?>
+      <?php foreach ($cfg['company_types'] as $ct): ?><option <?= oldv('company_type') === $ct ? 'selected' : '' ?>><?= h($ct) ?></option><?php endforeach; ?>
       </select></div>
-    <div><label>Registration number / owner ID *</label><input type="text" name="company_reg_no" required maxlength="40"></div>
-    <div><label>Owner name *</label><input type="text" name="company_owner" required maxlength="120"></div>
+    <div><label>Registration number / owner ID *</label><input type="text" name="company_reg_no" required maxlength="40" value="<?= h(oldv('company_reg_no')) ?>"></div>
+    <div><label>Owner name *</label><input type="text" name="company_owner" required maxlength="120" value="<?= h(oldv('company_owner')) ?>"></div>
   </div>
 </div>
 <?php endif; ?>
@@ -478,21 +492,21 @@ input:focus,select:focus { outline:2px solid var(--teal); border-color:var(--tea
   <?php foreach ($cfg['type_fields'] as $key => $label):
         $isDate = str_contains($key, 'date') || str_contains($key, 'from') || str_contains($key, '_to'); ?>
     <div><label><?= h($label) ?> *</label>
-      <input type="<?= $isDate ? 'date' : 'text' ?>" name="tf_<?= h($key) ?>" required maxlength="120"></div>
+      <input type="<?= $isDate ? 'date' : 'text' ?>" name="tf_<?= h($key) ?>" required maxlength="120" value="<?= h(oldv('tf_' . $key)) ?>"></div>
   <?php endforeach; ?>
   </div>
 </div>
 <?php endif; ?>
 
 <?php if ($cfg['second_party']): ?>
-<div class="card" id="ownerBlock" <?= $cfg['second_party'] === 'owner_if_tenant' ? 'style="display:none"' : '' ?>>
+<div class="card" id="ownerBlock" <?= $cfg['second_party'] === 'owner_if_tenant' && !($sticky && !empty($_POST['applicant_is_tenant'])) ? 'style="display:none"' : '' ?>>
   <h2>Registered Owner (co-signature required)</h2>
   <p class="note">The owner will receive an e-mail link to electronically confirm this application before it is verified.</p>
   <div class="row">
-    <div><label>Owner name *</label><input type="text" name="owner_name" maxlength="120"></div>
-    <div><label>Owner ID number</label><input type="text" name="owner_id_no" maxlength="30"></div>
-    <div><label>Owner e-mail *</label><input type="email" name="owner_email" maxlength="150"></div>
-    <div><label>Owner contact number</label><input type="text" name="owner_phone" maxlength="30"></div>
+    <div><label>Owner name *</label><input type="text" name="owner_name" maxlength="120" value="<?= h(oldv('owner_name')) ?>"></div>
+    <div><label>Owner ID number</label><input type="text" name="owner_id_no" maxlength="30" value="<?= h(oldv('owner_id_no')) ?>"></div>
+    <div><label>Owner e-mail *</label><input type="email" name="owner_email" maxlength="150" value="<?= h(oldv('owner_email')) ?>"></div>
+    <div><label>Owner contact number</label><input type="text" name="owner_phone" maxlength="30" value="<?= h(oldv('owner_phone')) ?>"></div>
   </div>
 </div>
 <?php endif; ?>
@@ -535,7 +549,7 @@ input:focus,select:focus { outline:2px solid var(--teal); border-color:var(--tea
   <h2>Undertakings &amp; Acknowledgements</h2>
   <p class="note">Each item must be acknowledged individually. Your acknowledgements are recorded with a timestamp per POPIA.</p>
   <?php foreach ($cfg['acks'] as $code => $text): ?>
-    <label><input type="checkbox" name="ack[<?= h($code) ?>]" value="1" required> <?= h($text) ?></label>
+    <label><input type="checkbox" name="ack[<?= h($code) ?>]" value="1" required <?= $sticky && !empty($_POST['ack'][$code]) ? 'checked' : '' ?>> <?= h($text) ?></label>
   <?php endforeach; ?>
 </div>
 
@@ -552,7 +566,8 @@ const FIELD_LABELS = {first_name:'First name', surname:'Surname', id_number:'ID 
   pet_name:'Pet name', pet_species:'Species', pet_breed:'Breed', pet_size:'Size', pet_age:'Age', pet_adult_weight_kg:'Adult breed weight (kg, max 15)'};
 let counters = {};
 
-function addItem(type) {
+function addItem(type, data) {
+  data = data || {};
   const cfg = ITEM_CFG[type];
   const container = document.getElementById('items_' + type);
   if (container.children.length >= cfg.max) return;
@@ -583,6 +598,18 @@ function addItem(type) {
   }
   div.innerHTML = html;
   container.appendChild(div);
+  // Repopulate from old data (sticky after validation error)
+  for (const f of cfg.fields) {
+    if (data[f] === undefined) continue;
+    const inp = div.querySelector('[name="items[' + type + '][' + idx + '][' + f + ']"]');
+    if (!inp) continue;
+    if (inp.type === 'checkbox') {
+      inp.checked = data[f] === '1' || data[f] === 1 || data[f] === true;
+      if (f === 'is_asylum' && inp.checked) toggleAsylum(inp);
+    } else {
+      inp.value = data[f];
+    }
+  }
   updateTotal();
 }
 
@@ -609,10 +636,52 @@ if (isTenantCb) {
   });
 }
 
-// Seed one row per repeater on load
+// Seed rows: rebuild from the failed submission if present, else one blank row
+const OLD_ITEMS = <?= json_encode($sticky && isset($_POST['items']) && is_array($_POST['items']) ? $_POST['items'] : new stdClass(), JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
 for (const [type, cfg] of Object.entries(ITEM_CFG)) {
-  addItem(type);
+  const oldRows = OLD_ITEMS[type] ? Object.values(OLD_ITEMS[type]) : [];
+  if (oldRows.length) {
+    oldRows.forEach(r => addItem(type, r));
+  } else {
+    addItem(type);
+  }
 }
+
+// ── Pre-submit SA ID validation (Luhn) — catches a mistyped digit
+//    BEFORE the form is submitted, so attached files are never lost.
+function saIdValid(id) {
+  if (!/^\d{13}$/.test(id)) return false;
+  let s = 0;
+  for (let i = 0; i < 13; i++) {
+    let d = +id[i];
+    if (i % 2 === 1) { d *= 2; if (d > 9) d -= 9; }
+    s += d;
+  }
+  return s % 10 === 0;
+}
+document.getElementById('appform').addEventListener('submit', function (e) {
+  let firstBad = null;
+  document.querySelectorAll('.itemblock').forEach(b => {
+    const idInp = b.querySelector('[name*="[id_number]"]');
+    if (!idInp || !idInp.value.trim()) return;
+    const pass = b.querySelector('[name*="[id_is_passport]"]');
+    if (pass && pass.checked) { idInp.style.borderColor = ''; idInp.style.outline = ''; return; }
+    if (!saIdValid(idInp.value.trim())) {
+      idInp.style.borderColor = '#b00020';
+      idInp.style.outline = '2px solid #b00020';
+      if (!firstBad) firstBad = idInp;
+    } else {
+      idInp.style.borderColor = '';
+      idInp.style.outline = '';
+    }
+  });
+  if (firstBad) {
+    e.preventDefault();
+    firstBad.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    firstBad.focus();
+    alert('One or more SA ID numbers are invalid — highlighted in red. Check the digits, or tick "This is a passport" if the number is not an SA ID.');
+  }
+});
 </script>
 <?php endif; ?>
 </div>
