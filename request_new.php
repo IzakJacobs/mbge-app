@@ -27,6 +27,7 @@ $type = $_GET['type'] ?? null;
 if ($type === 'tenant')  { header('Location: application_form.php?type=tenant');  exit; }
 if ($type === 'to_let')  { header('Location: application_form.php?type=to_let');  exit; }
 if ($type === 'pet')     { header('Location: application_form.php?type=pet');     exit; }
+if ($type === 'estate_agent') { header('Location: application_form.php?type=estate_agent'); exit; }
 // Visitor pets stay here:
 // request_new.php?type=pet_visitor
 
@@ -80,6 +81,9 @@ renderHeader('📝 New Request', 'resident.php?action=menu');
       </a>
       <a href="application_form.php?type=pet" class="menu-btn">
         <span class="icon">🐾</span>Register a Pet
+      </a>
+      <a href="application_form.php?type=estate_agent" class="menu-btn">
+        <span class="icon">🏢</span>Estate Agent Registration
       </a>
       <a href="request_new.php?type=pet_visitor" class="menu-btn">
         <span class="icon">🐕‍🦺</span>Visitor's Pet <small style="font-size:.72rem;color:#888;">(max 7 days)</small>

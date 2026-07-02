@@ -9,7 +9,12 @@
 require_once __DIR__ . '/application_lib.php';
 if (session_status() === PHP_SESSION_NONE) session_start();
 
-requireSecurity();
+// Documents are viewed by the site manager (contractor verification)
+// AND by admin (pet/tenant/to-let/estate agent approvals).
+if (empty($_SESSION['security_id']) && empty($_SESSION['admin_id'])) {
+    http_response_code(403);
+    exit('Access denied.');
+}
 
 $docId = filter_var($_GET['id'] ?? 0, FILTER_VALIDATE_INT);
 if (!$docId) { http_response_code(404); exit('Document not found.'); }

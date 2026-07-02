@@ -10,10 +10,19 @@
 require_once __DIR__ . '/application_lib.php';
 if (session_status() === PHP_SESSION_NONE) session_start();
 
-requireSecurity();   // same guard as every security.php action
+// ── ADMIN portal guard (Board delegation, MOI Art. 20.5.3) ──
+// If your admin login uses different session variable names, adjust
+// the two $_SESSION keys below to match admin.php's login block.
+requireAdmin();
 
-$managerId   = (int)($_SESSION['security_id'] ?? 0);
-$managerName = $_SESSION['security_name'] ?? 'Unknown';
+$managerId   = (int)($_SESSION['admin_id'] ?? 0);
+$managerName = $_SESSION['admin_name'] ?? 'Admin';
+$ACTOR       = 'admin';
+
+// Application types approved in THIS portal. Contractors are approved
+// by the site manager in application_admin.php (security portal).
+$PORTAL_TYPES = ['to_let', 'tenant', 'pet', 'estate_agent'];
+$PORTAL_IN    = "('to_let','tenant','pet','estate_agent')";
 
 // ════════════════════════════════════════════════════════
 // POST ACTIONS
@@ -42,24 +51,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
              WHERE application_id=?"
         )->execute([$pv, $pv, $managerId, $pv, $appId]);
         setFlash('success', 'Checklist saved.');
-        header('Location: application_admin.php?id=' . $appId); exit;
+        header('Location: admin_applications.php?id=' . $appId); exit;
     }
 
     // ── Verify (blocked until every check is Pass or N/A) ──
     if ($action === 'verify') {
         if (!appChecklistComplete($appId)) {
             setFlash('error', 'Cannot verify — outstanding checklist items remain. Every check must be Pass or N/A.');
-            header('Location: application_admin.php?id=' . $appId); exit;
+            header('Location: admin_applications.php?id=' . $appId); exit;
         }
         $stmt = db()->prepare("SELECT app_type FROM applications WHERE id=? LIMIT 1");
         $stmt->execute([$appId]);
         $appType = $stmt->fetchColumn();
         $next = APP_TYPES[$appType]['post_verify_status'] ?? 'approved';
 
-        if (appSetStatus($appId, 'verified', 'site_manager', $managerId, 'checklist complete')) {
+        if (appSetStatus($appId, 'verified', $ACTOR, $managerId, 'checklist complete')) {
             if ($next === 'induction_scheduled') {
                 // Contractor path — induction session before card issue
-                appSetStatus($appId, 'induction_scheduled', 'site_manager', $managerId, 'induction to be arranged');
+                appSetStatus($appId, 'induction_scheduled', $ACTOR, $managerId, 'induction to be arranged');
                 // ── MAILER HOOK (induction): notify the contact person to
                 //    arrange the induction session, per the Status-Mark procedure.
                 //    Wire your existing mail routine here, e.g.:
@@ -75,7 +84,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                          valid_until=NULLIF(JSON_UNQUOTE(JSON_EXTRACT(type_data, '$.rental_to')), 'null')
                      WHERE id=?"
                 )->execute([$managerId, $conditions, $appId]);
-                appSetStatus($appId, 'approved', 'site_manager', $managerId, 'approved after verification');
+                appSetStatus($appId, 'approved', $ACTOR, $managerId, 'approved after verification');
 
                 // ═══ LIVE-TABLE BRIDGES (wired) ═══
                 if ($appType === 'tenant') {
@@ -99,12 +108,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             setFlash('error', 'Status change not permitted from the current state.');
         }
-        header('Location: application_admin.php?id=' . $appId); exit;
+        header('Location: admin_applications.php?id=' . $appId); exit;
     }
 
     // ── Contractor: induction done → approve + BRIDGE to live SPs ──
     if ($action === 'approve_after_induction') {
-        if (appSetStatus($appId, 'approved', 'site_manager', $managerId, 'induction completed')) {
+        if (appSetStatus($appId, 'approved', $ACTOR, $managerId, 'induction completed')) {
             db()->prepare("UPDATE applications SET approved_by=?, approved_at=NOW() WHERE id=?")
                 ->execute([$managerId, $appId]);
 
@@ -113,17 +122,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmtT->execute([$appId]);
             $bridgeType = $stmtT->fetchColumn();
 
-            // Contractor: 1 lead (card) + 1 worker (slip) per verified worker
-            [$leadId, $workerCount] = appBridgeContractorToSp($appId, $managerName);
-            if ($leadId > 0) {
-                setFlash('success', "Induction confirmed — application approved. Bridged to live records: 1 contractor lead + {$workerCount} worker(s) created with QR codes. Print the permits below.");
+            if ($bridgeType === 'estate_agent') {
+                // One live estate_agent record: card permit, CS gate, 12-month validity
+                $agentSpId = appBridgeEstateAgentToSp($appId, $managerName);
+                setFlash('success', $agentSpId > 0
+                    ? 'Induction confirmed — estate agent approved. Live access record created with QR code; print the card below.'
+                    : 'Induction confirmed — estate agent approved. (Live record already existed; nothing duplicated.)');
             } else {
-                setFlash('success', 'Induction confirmed — application approved. (Live SP records already existed for this application; nothing duplicated.)');
+                setFlash('error', 'This application type is not inducted in the admin portal.');
             }
         } else {
             setFlash('error', 'Status change not permitted from the current state.');
         }
-        header('Location: application_admin.php?id=' . $appId); exit;
+        header('Location: admin_applications.php?id=' . $appId); exit;
     }
 
     // ── Return for correction ──────────────────────────────
@@ -133,7 +144,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             setFlash('error', 'A reason is required when returning an application.');
         } else {
             db()->prepare("UPDATE applications SET return_reason=? WHERE id=?")->execute([$reason, $appId]);
-            appSetStatus($appId, 'returned', 'site_manager', $managerId, 'returned: ' . mb_substr($reason, 0, 200));
+            appSetStatus($appId, 'returned', $ACTOR, $managerId, 'returned: ' . mb_substr($reason, 0, 200));
 
             // ── MAILER HOOK (return): e-mail the applicant the deficiencies
             //    plus their resume link. Token is already on the row:
@@ -143,7 +154,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             //    (full gemb.co.za URL — never through a shortener; token must arrive unmodified)
             setFlash('success', 'Application returned to the applicant with the deficiencies listed.');
         }
-        header('Location: application_admin.php?id=' . $appId); exit;
+        header('Location: admin_applications.php?id=' . $appId); exit;
     }
 
     // ── Reject ─────────────────────────────────────────────
@@ -152,16 +163,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($reason === '') {
             setFlash('error', 'A reason is required when rejecting an application.');
         } else {
-            appSetStatus($appId, 'rejected', 'site_manager', $managerId, 'rejected: ' . mb_substr($reason, 0, 200));
+            appSetStatus($appId, 'rejected', $ACTOR, $managerId, 'rejected: ' . mb_substr($reason, 0, 200));
             setFlash('success', 'Application rejected.');
         }
-        header('Location: application_admin.php?id=' . $appId); exit;
+        header('Location: admin_applications.php?id=' . $appId); exit;
     }
 
     // ── Withdraw an approval (pet rule 1.3 / letting clause 6) ──
     if ($action === 'withdraw_approval') {
         $reason = appClean($_POST['withdraw_reason'] ?? '', 2000);
-        if (appSetStatus($appId, 'withdrawn', 'site_manager', $managerId, 'approval withdrawn: ' . mb_substr($reason, 0, 200))) {
+        if (appSetStatus($appId, 'withdrawn', $ACTOR, $managerId, 'approval withdrawn: ' . mb_substr($reason, 0, 200))) {
             // ═══ DEACTIVATION BRIDGE (wired) ═══ closes the linked live
             // records too: tenants/pets → denied(+reason); tenant's resident
             // row → inactive; their vehicles → active=0; contractor SPs → revoked.
@@ -170,10 +181,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             setFlash('error', 'Status change not permitted from the current state.');
         }
-        header('Location: application_admin.php'); exit;
+        header('Location: admin_applications.php'); exit;
     }
 
-    header('Location: application_admin.php'); exit;
+    header('Location: admin_applications.php'); exit;
 }
 
 // ════════════════════════════════════════════════════════
@@ -185,9 +196,10 @@ if ($detailId) {
     $stmt = db()->prepare("SELECT * FROM applications WHERE id=? LIMIT 1");
     $stmt->execute([$detailId]);
     $detail = $stmt->fetch();
-    if ($detail && $detail['app_type'] !== 'contractor') {
+    if ($detail && !in_array($detail['app_type'], $PORTAL_TYPES, true)) {
+        // Contractors belong to the site manager's portal
         http_response_code(403);
-        exit('This application type is approved in the admin portal (Board delegation, MOI Art. 20.5.3).');
+        exit('Contractor applications are verified by the site manager in the security portal.');
     }
 }
 
@@ -205,22 +217,22 @@ if (!$detail) {
     if ($filter === 'all') {
         $apps = db()->query(
             "SELECT id, app_ref, app_type, applicant_name, company_name, erf_no, submitted_at, status
-             FROM applications WHERE app_type = 'contractor'
+             FROM applications WHERE app_type IN {$PORTAL_IN}
              ORDER BY submitted_at DESC LIMIT 200"
         )->fetchAll();
     } else {
         // Oldest first for work queues — first received = first served
         $stmt = db()->prepare(
             "SELECT id, app_ref, app_type, applicant_name, company_name, erf_no, submitted_at, status
-             FROM applications WHERE status=? AND app_type = 'contractor'
+             FROM applications WHERE status=? AND app_type IN {$PORTAL_IN}
              ORDER BY submitted_at ASC LIMIT 200"
         );
         $stmt->execute([$filter]);
         $apps = $stmt->fetchAll();
     }
 
-    pageHeader('Applications', 'security');
-    renderHeader('📋 Application Verification', 'security.php?action=menu');
+    pageHeader('Application Approvals', 'admin');
+    renderHeader('📋 Application Approvals — Admin', 'admin.php?action=menu');
     ?>
     <div class="container">
       <?= getFlash() ?>
@@ -234,7 +246,7 @@ if (!$detail) {
             'approved'             => '✅ Approved',
             'all'                  => '📋 All',
         ] as $s => $label): ?>
-        <a href="application_admin.php?status=<?= $s ?>"
+        <a href="admin_applications.php?status=<?= $s ?>"
            class="btn btn-sm <?= $filter === $s ? 'btn-primary' : 'btn-secondary' ?>"><?= $label ?></a>
         <?php endforeach; ?>
       </div>
@@ -269,9 +281,9 @@ if (!$detail) {
               <?= str_replace('_', ' ', $a['status']) ?>
             </span>
             <?php if ($a['status'] === 'approved' && in_array($a['app_type'], ['contractor', 'estate_agent'], true)): ?>
-            <a href="application_admin.php?id=<?= $a['id'] ?>" class="btn btn-success btn-sm">🪪 Permits</a>
+            <a href="admin_applications.php?id=<?= $a['id'] ?>" class="btn btn-success btn-sm">🪪 Permits</a>
             <?php endif; ?>
-            <a href="application_admin.php?id=<?= $a['id'] ?>" class="btn btn-primary btn-sm">Open</a>
+            <a href="admin_applications.php?id=<?= $a['id'] ?>" class="btn btn-primary btn-sm">Open</a>
           </div>
         </div>
       </div>
@@ -336,8 +348,8 @@ if ($detail['status'] === 'approved' && in_array($detail['app_type'], ['contract
     }
 }
 
-pageHeader('Application ' . $detail['app_ref'], 'security');
-renderHeader($cfg['icon'] . ' ' . htmlspecialchars($detail['app_ref']), 'application_admin.php');
+pageHeader('Application ' . $detail['app_ref'], 'admin');
+renderHeader($cfg['icon'] . ' ' . htmlspecialchars($detail['app_ref']), 'admin_applications.php');
 ?>
 <div class="container">
   <?= getFlash() ?>
@@ -461,7 +473,7 @@ renderHeader($cfg['icon'] . ' ' . htmlspecialchars($detail['app_ref']), 'applica
   </div>
 
   <!-- ── Checklist + actions ─────────────────────────── -->
-  <form method="POST" action="application_admin.php">
+  <form method="POST" action="admin_applications.php">
     <?= csrfField() ?>
     <input type="hidden" name="app_id" value="<?= (int)$detailId ?>">
 
@@ -560,6 +572,6 @@ renderHeader($cfg['icon'] . ' ' . htmlspecialchars($detail['app_ref']), 'applica
     <?php endif; ?>
   </form>
 
-  <div class="popia-notice">Verification actions are permanently logged per POPIA §11.</div>
+  <div class="popia-notice">Approvals under Board delegation (MOI Art. 20.5.3). Actions are permanently logged per POPIA §11.</div>
 </div>
 <?php pageFooter(); ?>

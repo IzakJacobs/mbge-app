@@ -76,6 +76,64 @@ const APP_TYPES = [
         ],
     ],
 
+    'estate_agent' => [
+        'label'        => 'Estate Agent Registration (MBGE Requirements & Rules 2023)',
+        'icon'         => '🏢',
+        'reg_types'    => ['new' => 'New Registration', 'renewal' => 'Annual Renewal'],
+        'company_block'=> true,
+        'company_types'=> null,          // agency name/principal captured; no trade category applies
+        'requires_erf' => false,
+        'type_fields'  => ['agency_phone' => 'Agency telephone number (as marked on vehicles)'],
+        'type_fields_title' => 'Agency Details',
+        'items'        => [
+            'vehicle' => [
+                'label' => 'Agency Vehicle (must be branded on both sides)', 'min' => 0, 'max' => 3,
+                'fields' => ['vehicle_make', 'vehicle_reg', 'vehicle_colour'],
+                'docs'   => [],
+            ],
+        ],
+        'app_docs'     => [
+            'ffc_agent'         => ['label' => 'Fidelity Fund Certificate — Agent', 'required' => true],
+            'ffc_principal'     => ['label' => 'Fidelity Fund Certificate — Principal / Firm', 'required' => true],
+            'employment_letter' => ['label' => 'Letter of Employment from the Principal', 'required' => true],
+            'payment_proof'     => ['label' => 'Proof of payment (R150.00 access card + R100.00 administration fee)', 'required' => true],
+        ],
+        'payment'      => ['per' => 'application', 'amount' => 250.00,
+                           'bank_details' => "R150.00 gate access card fee (HOA):\nMOSSEL BAY GOLF ESTATE, ABSA Bank Mossel Bay\nBranch code: 632005, Cheque account: 4049 422 172\nReference: your application reference\n\nR100.00 administration fee — payable to the Managing Agent (Status-Mark), banking details per their invoice."],
+        'second_party' => false,
+        'depends_on'   => null,
+        'acks'         => [
+            'agent_cs_gate'        => 'I acknowledge that access is obtained only through the contractor gate at Church Street.',
+            'agent_card_display'   => 'I will display my gate access card and provide the security officer with the owner\'s name and the address of the property being visited.',
+            'agent_card_personal'  => 'The gate access card is issued to me personally and is not transferable.',
+            'agent_vehicle_branded'=> 'Vehicles I use to enter the estate will be clearly marked on both sides with the agency\'s name and telephone number.',
+            'agent_purpose_only'   => 'I will visit the estate only to negotiate with prospective sellers or to bring prospective buyers to view properties for sale; no estate tours.',
+            'agent_accompany'      => 'I will meet prospective buyers at the entrance gate and accompany them; buyers may not enter in their own vehicles or visit unaccompanied, and will leave the estate with me.',
+            'agent_responsible'    => 'I am responsible for the behaviour and conduct of prospective buyers from entry until they leave the estate.',
+            'agent_no_concessions' => 'I have no right to make concessions on estate rules, will not create any expectation of deviation, and will convey the rules to buyers as I received them.',
+            'agent_rules_signed'   => 'I will ensure each new owner/tenant receives and signs the estate rules, handed to the Managing Agency before access is granted to them.',
+            'agent_no_mechanisms'  => 'Sellers\' access mechanisms are not transferable, and I will not use any owner\'s or seller\'s access mechanism to enter or exit the estate.',
+            'agent_pets_workers'   => 'I will ensure buyers/tenants understand the rules on pets (written authorisation in advance) and worker access (arranged in advance with estate management).',
+            'agent_no_marketing'   => 'I will not market on the estate or go door-to-door distributing calendars, business cards or pamphlets — this also applies to agents residing on the estate.',
+            'agent_signage'        => 'No for-sale/to-let boards in windows, on sidewalks, in yards or on walkways; show-day signs only within the marketed property\'s boundaries, removed after the showing, failing which they are confiscated.',
+            'agent_cancellation'   => 'I understand that disregarding any of these requirements/rules may result in immediate cancellation of my access to the estate.',
+            'agent_popia_consent'  => 'I consent to the processing of the personal information on this form solely for estate agent registration and access control purposes (POPIA).',
+        ],
+        'post_verify_status' => 'induction_scheduled',   // induction at the Managing Agent's office
+        'checklist'    => [
+            'app' => [
+                'registered_with_ma'   => 'Agent registered with the Managing Agency',
+                'ffc_agent_valid'      => 'Fidelity Fund Certificate (agent) present and currently valid',
+                'ffc_principal_valid'  => 'Fidelity Fund Certificate (principal/firm) present and currently valid',
+                'employment_letter_ok' => 'Letter of employment from the principal present and on agency letterhead',
+                'payment_hoa_verified' => 'R150.00 gate access card fee received by the HOA',
+                'payment_ma_verified'  => 'R100.00 administration fee received by the Managing Agent',
+                'vehicle_branding'     => 'Vehicle branding (agency name + phone, both sides) confirmed / to be confirmed at induction',
+                'all_acks_present'     => 'All requirements and rules acknowledged',
+            ],
+        ],
+    ],
+
     'to_let' => [
         'label'        => 'Member Registration to Let (Conduct Rule 15.2)',
         'icon'         => '🏠',
@@ -746,9 +804,76 @@ function appDeactivateBridged(int $appId, string $reason): void {
         )->execute([$reason, $like]);
     }
 
-    if ($app['app_type'] === 'contractor') {
+    if (in_array($app['app_type'], ['contractor', 'estate_agent'], true)) {
+        // Immediate cancellation per the Estate Agent Rules / contractor revocation
         $pdo->prepare(
             "UPDATE service_providers SET approved='false', expired=1 WHERE notes LIKE ?"
         )->execute([$like]);
     }
+}
+
+/**
+ * ESTATE AGENT BRIDGE — on approval (after induction at the Managing
+ * Agent's office), create ONE live service_providers record for the
+ * agent: category 'estate_agent', card permit, Church Street gate,
+ * 12-month validity (annual renewal per the 2023 Requirements & Rules).
+ * Agency vehicle registrations are written into notes so the guard
+ * sees them on QR verification. Idempotent via the app_ref marker.
+ */
+function appBridgeEstateAgentToSp(int $appId, string $approverName): int {
+    $pdo = db();
+
+    $stmt = $pdo->prepare("SELECT * FROM applications WHERE id=? LIMIT 1");
+    $stmt->execute([$appId]);
+    $app = $stmt->fetch();
+    if (!$app || $app['app_type'] !== 'estate_agent') return 0;
+
+    $noteTag = '[gemB ' . $app['app_ref'] . ']';
+    $chk = $pdo->prepare("SELECT COUNT(*) FROM service_providers WHERE notes LIKE ?");
+    $chk->execute(['%' . $noteTag . '%']);
+    if ((int)$chk->fetchColumn() > 0) return 0;
+
+    // Agency vehicles → guard-visible note
+    $vs = $pdo->prepare(
+        "SELECT vehicle_make, vehicle_reg, vehicle_colour FROM application_items
+         WHERE application_id=? AND item_type='vehicle' AND item_status <> 'failed'"
+    );
+    $vs->execute([$appId]);
+    $plates = [];
+    foreach ($vs->fetchAll() as $v) {
+        $p = strtoupper(trim($v['vehicle_reg'] ?? ''));
+        if ($p !== '') $plates[] = $p . ' (' . trim(($v['vehicle_make'] ?? '') . ' ' . ($v['vehicle_colour'] ?? '')) . ')';
+    }
+    $td = $app['type_data'] ? json_decode($app['type_data'], true) : [];
+    $notes = 'Estate agent — ' . ($app['company_name'] ?? '')
+           . (!empty($td['agency_phone']) ? ', tel ' . $td['agency_phone'] : '')
+           . '. CS gate only; card must be displayed; owner name + property address to be provided.'
+           . ($plates ? ' Vehicles: ' . implode('; ', $plates) . '.' : '')
+           . ' Annual renewal. ' . $noteTag;
+
+    $startDate = date('Y-m-d');
+    $endDate   = date('Y-m-d', strtotime('+12 months'));
+    $code      = appNewSpUniqueCode();
+
+    $pdo->prepare("
+        INSERT INTO service_providers
+          (resident_erfno, resident_name, service_name, company_name,
+           id_number, sp_phone, category, permit_type, lead_id,
+           once_off, access_days, access_start, access_end,
+           start_date, end_date, notes,
+           unique_code, status, approved, expired,
+           invited_by_resident_id, id_verified, approved_by, approved_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'approved','true',0,NULL,1,?,NOW())
+    ")->execute([
+        '', 'GEMB Estate',
+        $app['applicant_name'], $app['company_name'] ?? '',
+        $app['applicant_id_no'] ?? '', $app['applicant_phone'] ?? '',
+        'estate_agent', 'card', null,
+        0, 'Mon,Tue,Wed,Thu,Fri,Sat,Sun', '07:00:00', '17:00:00',
+        $startDate, $endDate, $notes,
+        $code, $approverName,
+    ]);
+    $spId = (int)$pdo->lastInsertId();
+    appGenerateSpQr($spId);
+    return $spId;
 }

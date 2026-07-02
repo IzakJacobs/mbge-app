@@ -260,7 +260,8 @@ if ($action === 'menu') {
     try {
         $pendingApps = db()->query(
             "SELECT COUNT(*) FROM applications
-             WHERE status IN ('pending_verification','induction_scheduled')"
+             WHERE app_type = 'contractor'
+               AND status IN ('pending_verification','induction_scheduled')"
         )->fetchColumn();
     } catch (Exception $e) {
         $pendingApps = 0;   // engine tables not installed yet — button still works
@@ -1144,6 +1145,7 @@ if ($action === 'approvals') {
         'resident_worker'   => ['icon'=>'🔧','label'=>'Resident Worker'],
         'contractor_lead'   => ['icon'=>'👷','label'=>'Contractor Lead'],
         'contractor_worker' => ['icon'=>'🪖','label'=>'Contractor Worker'],
+        'estate_agent'      => ['icon'=>'🏢','label'=>'Estate Agent'],
     ];
 
     // ── Map invite codes → engine application (Application Engine).
