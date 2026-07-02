@@ -57,7 +57,21 @@ $prefill = [
     'applicant_name'  => $invite['service_name'] ?? '',
     'applicant_id_no' => $invite['id_number'] ?? '',
     'company_name'    => $invite['company_name'] ?? '',
+    'erf_no'          => '',
+    'owner_name'      => '',
 ];
+
+// ── Resident session prefill: pet/to_let applicants are the resident
+//    themselves; for tenant the resident is the co-signing OWNER while
+//    the applicant fields belong to the tenant.
+if (in_array($type, ['pet', 'to_let', 'tenant'], true) && !empty($_SESSION['resident_erf'])) {
+    $prefill['erf_no'] = (string)$_SESSION['resident_erf'];
+    if ($type === 'tenant') {
+        $prefill['owner_name'] = (string)($_SESSION['resident_name'] ?? '');
+    } elseif ($prefill['applicant_name'] === '') {
+        $prefill['applicant_name'] = (string)($_SESSION['resident_name'] ?? '');
+    }
+}
 
 // ── Sticky form values: when validation fails, every field repopulates
 //    from the submitted POST so nothing has to be retyped. (Browsers do
@@ -462,7 +476,7 @@ input:focus,select:focus { outline:2px solid var(--teal); border-color:var(--tea
     <div><label>E-mail address *</label><input type="email" name="applicant_email" required maxlength="150" value="<?= h(oldv('applicant_email')) ?>"></div>
     <div><label>Contact number *</label><input type="text" name="applicant_phone" required maxlength="30" value="<?= h(oldv('applicant_phone')) ?>"></div>
     <?php if ($cfg['requires_erf']): ?>
-      <div><label>Erf number *</label><input type="text" name="erf_no" required maxlength="10" style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase()" value="<?= h(oldv('erf_no')) ?>"></div>
+      <div><label>Erf number *</label><input type="text" name="erf_no" required maxlength="10" style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase()" value="<?= h(oldv('erf_no', $prefill['erf_no'])) ?>"></div>
     <?php endif; ?>
     <?php if ($cfg['second_party'] === 'owner_if_tenant'): ?>
       <div><label style="margin-top:28px"><input type="checkbox" name="applicant_is_tenant" value="1" id="isTenant" <?= $sticky && !empty($_POST['applicant_is_tenant']) ? 'checked' : '' ?>> I am a tenant (not the registered owner)</label></div>
@@ -503,7 +517,7 @@ input:focus,select:focus { outline:2px solid var(--teal); border-color:var(--tea
   <h2>Registered Owner (co-signature required)</h2>
   <p class="note">The owner will receive an e-mail link to electronically confirm this application before it is verified.</p>
   <div class="row">
-    <div><label>Owner name *</label><input type="text" name="owner_name" maxlength="120" value="<?= h(oldv('owner_name')) ?>"></div>
+    <div><label>Owner name *</label><input type="text" name="owner_name" maxlength="120" value="<?= h(oldv('owner_name', $prefill['owner_name'])) ?>"></div>
     <div><label>Owner ID number</label><input type="text" name="owner_id_no" maxlength="30" value="<?= h(oldv('owner_id_no')) ?>"></div>
     <div><label>Owner e-mail *</label><input type="email" name="owner_email" maxlength="150" value="<?= h(oldv('owner_email')) ?>"></div>
     <div><label>Owner contact number</label><input type="text" name="owner_phone" maxlength="30" value="<?= h(oldv('owner_phone')) ?>"></div>
