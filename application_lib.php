@@ -441,18 +441,20 @@ function appBridgeContractorToSp(int $appId, string $approverName): array {
     //    resident's Contractor Lead invite (type_data.invite_code), inherit
     //    that resident's erf/name (as sp_add does from a lead) and supersede
     //    the placeholder invite record so it cannot be approved separately.
-    $resErfno = '';
-    $resName  = 'GEMB Estate';
+    $resErfno  = '';
+    $resName   = 'GEMB Estate';
+    $invitedBy = null;
     $td = $app['type_data'] ? json_decode($app['type_data'], true) : [];
     if (!empty($td['invite_code']) && preg_match('/^\d{6}$/', (string)$td['invite_code'])) {
         $inv = $pdo->prepare(
-            "SELECT id, resident_erfno, resident_name FROM service_providers
+            "SELECT id, resident_erfno, resident_name, invited_by_resident_id FROM service_providers
              WHERE unique_code = ? AND category = 'contractor_lead' LIMIT 1"
         );
         $inv->execute([$td['invite_code']]);
         if ($invRow = $inv->fetch()) {
-            $resErfno = $invRow['resident_erfno'] ?? '';
-            $resName  = $invRow['resident_name'] ?: 'GEMB Estate';
+            $resErfno  = $invRow['resident_erfno'] ?? '';
+            $resName   = $invRow['resident_name'] ?: 'GEMB Estate';
+            $invitedBy = $invRow['invited_by_resident_id'] !== null ? (int)$invRow['invited_by_resident_id'] : null;
             $pdo->prepare(
                 "UPDATE service_providers
                  SET expired = 1,
@@ -472,7 +474,7 @@ function appBridgeContractorToSp(int $appId, string $approverName): array {
            start_date, end_date, notes,
            unique_code, status, approved, expired,
            invited_by_resident_id, id_verified, approved_by, approved_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'approved','true',0,NULL,1,?,NOW())
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'approved','true',0,?,1,?,NOW())
     ")->execute([
         $resErfno, $resName,
         $app['applicant_name'], $app['company_name'] ?? '',
@@ -481,7 +483,7 @@ function appBridgeContractorToSp(int $appId, string $approverName): array {
         0, 'Mon,Tue,Wed,Thu,Fri', '07:00:00', '17:00:00',
         $startDate, $endDate,
         'Contact person — ' . ($app['company_name'] ?? '') . ' ' . $noteTag,
-        $leadCode, $approverName,
+        $leadCode, $invitedBy, $approverName,
     ]);
     $leadId = (int)$pdo->lastInsertId();
     appGenerateSpQr($leadId);
@@ -502,7 +504,7 @@ function appBridgeContractorToSp(int $appId, string $approverName): array {
            start_date, end_date, notes,
            unique_code, status, approved, expired,
            invited_by_resident_id, id_verified, approved_by, approved_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'approved','true',0,NULL,1,?,NOW())
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'approved','true',0,?,1,?,NOW())
     ");
     $n = 0;
     foreach ($workers as $w) {
@@ -511,12 +513,12 @@ function appBridgeContractorToSp(int $appId, string $approverName): array {
             $resErfno, $resName,
             trim(($w['first_name'] ?? '') . ' ' . ($w['surname'] ?? '')),
             $app['company_name'] ?? '',
-            $w['id_number'] ?? '', '',
+            $w['id_number'] ?? '', $app['applicant_phone'] ?? '',   // workers carry the contact person's number
             'contractor_worker', 'slip', $leadId,
             0, 'Mon,Tue,Wed,Thu,Fri', '07:00:00', '17:00:00',
             $startDate, $endDate,
             'Access card worker ' . $noteTag,
-            $code, $approverName,
+            $code, $invitedBy, $approverName,
         ]);
         appGenerateSpQr((int)$pdo->lastInsertId());
         $n++;
