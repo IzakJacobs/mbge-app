@@ -33,6 +33,32 @@ if (!empty($_GET['resume'])) {
 if (!isset(APP_TYPES[$type])) { http_response_code(404); exit('Unknown application type.'); }
 $cfg = APP_TYPES[$type];
 
+// ── Optional invite linkage (resident-invited Contractor Lead) ──
+// application_form.php?type=contractor&invite=766651
+// Links this application to the resident's invite so the approval bridge
+// inherits the erf/resident and supersedes the placeholder invite record.
+$invite = null;
+$inviteCode = preg_match('/^\d{6}$/', (string)($_REQUEST['invite'] ?? '')) ? $_REQUEST['invite'] : '';
+if ($type === 'contractor' && $inviteCode !== '') {
+    $stmt = db()->prepare(
+        "SELECT unique_code, resident_erfno, resident_name, service_name, company_name, id_number
+         FROM service_providers
+         WHERE unique_code = ? AND category = 'contractor_lead' AND expired = 0 LIMIT 1"
+    );
+    $stmt->execute([$inviteCode]);
+    $invite = $stmt->fetch() ?: null;
+}
+
+// ── Office-capture mode: the site manager completes the form at the
+//    security office with the contractor present. Detected from the
+//    active security session (same session as security.php).
+$officeMode = !empty($_SESSION['security_id']);
+$prefill = [
+    'applicant_name'  => $invite['service_name'] ?? '',
+    'applicant_id_no' => $invite['id_number'] ?? '',
+    'company_name'    => $invite['company_name'] ?? '',
+];
+
 // ── Handle submission ─────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verifyCsrfToken();
@@ -84,6 +110,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         // ── Type-specific fields → JSON ──
         $typeData = [];
+        if ($invite) $typeData['invite_code'] = $invite['unique_code'];   // resident invite linkage
         foreach ($cfg['type_fields'] ?? [] as $key => $label) {
             $typeData[$key] = appClean($_POST['tf_' . $key] ?? '', 120);
             if ($typeData[$key] === '') $errors[] = $label . ' is required.';
@@ -375,8 +402,22 @@ input:focus,select:focus { outline:2px solid var(--teal); border-color:var(--tea
   </ul></div>
 <?php endif; ?>
 
+<?php if ($officeMode): ?>
+  <div class="card" style="background:#f5f0ff;border-left:4px solid #8e44ad;">
+    <strong>🛡️ Office capture mode</strong>
+    <p class="note" style="margin:6px 0 0;">You are logged in as security. Complete this application with the contractor present at the office: verify each ID in person, upload the documents they bring, and tick each undertaking as the contractor confirms it. After submission, open it in Application Verification to work the checklist and approve.</p>
+  </div>
+<?php endif; ?>
+<?php if ($invite): ?>
+  <div class="card" style="background:#eef6f6;border-left:4px solid var(--teal);">
+    <strong>🏠 Linked to a resident invite</strong>
+    <p class="note" style="margin:6px 0 0;">Invited by <?= h($invite['resident_name'] ?? '') ?> (Erf <?= h($invite['resident_erfno'] ?? '') ?>) — invite reference <?= h($invite['unique_code']) ?>. On approval, access records will be linked to this resident.</p>
+  </div>
+<?php endif; ?>
+
 <form method="post" enctype="multipart/form-data" id="appform">
 <?= csrfField() ?>
+<?php if ($invite): ?><input type="hidden" name="invite" value="<?= h($invite['unique_code']) ?>"><?php endif; ?>
 
 <?php if (!empty($cfg['reg_types'])): ?>
 <div class="card">
@@ -393,8 +434,8 @@ input:focus,select:focus { outline:2px solid var(--teal); border-color:var(--tea
 <div class="card">
   <h2><?= $cfg['company_block'] ? 'Contact Person' : 'Applicant' ?></h2>
   <div class="row">
-    <div><label>Full name *</label><input type="text" name="applicant_name" required maxlength="120"></div>
-    <div><label>ID number</label><input type="text" name="applicant_id_no" maxlength="30"></div>
+    <div><label>Full name *</label><input type="text" name="applicant_name" required maxlength="120" value="<?= h($prefill['applicant_name']) ?>"></div>
+    <div><label>ID number</label><input type="text" name="applicant_id_no" maxlength="30" value="<?= h($prefill['applicant_id_no']) ?>"></div>
     <div><label>E-mail address *</label><input type="email" name="applicant_email" required maxlength="150"></div>
     <div><label>Contact number *</label><input type="text" name="applicant_phone" required maxlength="30"></div>
     <?php if ($cfg['requires_erf']): ?>
@@ -410,7 +451,7 @@ input:focus,select:focus { outline:2px solid var(--teal); border-color:var(--tea
 <div class="card">
   <h2>Company Details</h2>
   <div class="row">
-    <div><label>Company name *</label><input type="text" name="company_name" required maxlength="150"></div>
+    <div><label>Company name *</label><input type="text" name="company_name" required maxlength="150" value="<?= h($prefill['company_name']) ?>"></div>
     <div><label>Company type *</label>
       <select name="company_type" required><option value="">— Select —</option>
       <?php foreach ($cfg['company_types'] as $ct): ?><option><?= h($ct) ?></option><?php endforeach; ?>
