@@ -1097,9 +1097,23 @@ if ($action === 'approvals') {
         $whereFilter = ''; // 'all' — no filter
     }
 
-    // ── ORDER: oldest first for pending (first received = first served)
+    // ── Housekeeping: automatically delete invites whose access window
+    //    has lapsed without the contractor ever presenting at the office
+    //    (status still 'invited'). Engine-linked and presented records
+    //    are never touched. Also aligns with the 90-day POPIA retention.
+    try {
+        db()->query(
+            "DELETE FROM service_providers
+             WHERE status = 'invited'
+               AND end_date < CURDATE()
+               AND (notes IS NULL OR notes NOT LIKE '%[gemB APP-%')"
+        );
+    } catch (Exception $e) { /* status column absent — skip */ }
+
+    // ── ORDER: newest first for invited (latest invite on top);
+    //           oldest first for pending (first received = first served);
     //           newest first for approved/all
-    $orderBy = ($filter === 'pending' || $filter === 'invited')
+    $orderBy = ($filter === 'pending')
                ? 'ORDER BY sp.created_at ASC'
                : 'ORDER BY sp.created_at DESC';
 

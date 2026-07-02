@@ -10,7 +10,9 @@
 require_once __DIR__ . '/application_lib.php';
 if (session_status() === PHP_SESSION_NONE) session_start();
 
-function h(string $s): string { return htmlspecialchars($s, ENT_QUOTES, 'UTF-8'); }
+if (!function_exists('h')) {
+    function h(string $s): string { return htmlspecialchars($s, ENT_QUOTES, 'UTF-8'); }
+}
 
 $token = appClean($_REQUEST['token'] ?? '', 64);
 if (!preg_match('/^[a-f0-9]{64}$/', $token)) { http_response_code(404); exit('Invalid link.'); }
