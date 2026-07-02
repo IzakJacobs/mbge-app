@@ -1,414 +1,509 @@
 <?php
-/**
- * gemB - Site Manager application verification portal
- * Unified queue for all application types + per-application checklist screen.
- *
- * Access control: requires an authenticated security/site-manager session,
- * consistent with security.php. Adjust the session guard below to match
- * the live gemB session variable names.
- */
-declare(strict_types=1);
+// ============================================================
+// GEMB Access Control — application_admin.php
+// Site Manager verification portal for the Application Engine.
+// Conventions identical to security.php: requireSecurity(),
+// csrfField()/verifyCsrfToken(), setFlash()/getFlash(),
+// pageHeader()/renderHeader()/pageFooter(), PDO via db().
+// Session: $_SESSION['security_id'], $_SESSION['security_name'].
+// ============================================================
 require_once __DIR__ . '/application_lib.php';
+if (session_status() === PHP_SESSION_NONE) session_start();
 
-/* ---------- Session guard (align with existing security portal) ---------- */
-if (session_status() !== PHP_SESSION_ACTIVE) {
-    session_set_cookie_params(['httponly' => true, 'secure' => true, 'samesite' => 'Strict']);
-    session_start();
-}
-if (empty($_SESSION['security_user_id']) || ($_SESSION['security_role'] ?? '') !== 'site_manager') {
-    http_response_code(403);
-    exit('Access denied. Site manager login required.');
-}
-$managerId = (int)$_SESSION['security_user_id'];
-$csrf = app_csrf_token();
+requireSecurity();   // same guard as every security.php action
 
-function h(string $s): string { return htmlspecialchars($s, ENT_QUOTES, 'UTF-8'); }
+$managerId   = (int)($_SESSION['security_id'] ?? 0);
+$managerName = $_SESSION['security_name'] ?? 'Unknown';
 
-/* ---------- POST actions ---------- */
-$flash = '';
+// ════════════════════════════════════════════════════════
+// POST ACTIONS
+// ════════════════════════════════════════════════════════
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!app_csrf_check($_POST['csrf'] ?? null)) { http_response_code(403); exit('CSRF token invalid.'); }
+    verifyCsrfToken();
     $appId  = (int)($_POST['app_id'] ?? 0);
-    $action = app_clean((string)($_POST['action'] ?? ''), 30);
+    $action = $_POST['app_action'] ?? '';
 
+    // ── Save checklist results + payment verification ─────
     if ($action === 'save_checks') {
-        // Save checklist results
+        $upd = db()->prepare(
+            "UPDATE application_checklist
+             SET result=?, comment=?, checked_by=?, checked_at=NOW()
+             WHERE id=? AND application_id=?"
+        );
         foreach (($_POST['check'] ?? []) as $checkId => $result) {
-            $checkId = (int)$checkId;
             if (!in_array($result, ['pending', 'pass', 'fail', 'n_a'], true)) continue;
-            $comment = app_clean((string)($_POST['comment'][$checkId] ?? ''), 500);
-            $stmt = $conn->prepare(
-                "UPDATE application_checklist
-                 SET result = ?, comment = ?, checked_by = ?, checked_at = NOW()
-                 WHERE id = ? AND application_id = ?");
-            $stmt->bind_param('ssiii', $result, $comment, $managerId, $checkId, $appId);
-            $stmt->execute();
-            $stmt->close();
+            $comment = appClean($_POST['comment'][(int)$checkId] ?? '', 500);
+            $upd->execute([$result, $comment, $managerId, (int)$checkId, $appId]);
         }
-        // Payment verification flag
-        if (isset($_POST['payment_verified'])) {
-            $pv = (int)(bool)$_POST['payment_verified'];
-            $stmt = $conn->prepare(
-                "UPDATE application_payments
-                 SET verified = ?, verified_by = IF(?=1, ?, NULL), verified_at = IF(?=1, NOW(), NULL)
-                 WHERE application_id = ?");
-            $stmt->bind_param('iiiii', $pv, $pv, $managerId, $pv, $appId);
-            $stmt->execute();
-            $stmt->close();
-        }
-        $flash = 'Checklist saved.';
+        $pv = isset($_POST['payment_verified']) ? 1 : 0;
+        db()->prepare(
+            "UPDATE application_payments
+             SET verified=?, verified_by=IF(?=1, ?, NULL), verified_at=IF(?=1, NOW(), NULL)
+             WHERE application_id=?"
+        )->execute([$pv, $pv, $managerId, $pv, $appId]);
+        setFlash('success', 'Checklist saved.');
+        header('Location: application_admin.php?id=' . $appId); exit;
     }
 
+    // ── Verify (blocked until every check is Pass or N/A) ──
     if ($action === 'verify') {
-        if (!app_checklist_complete($conn, $appId)) {
-            $flash = 'Cannot verify: outstanding checklist items remain (all must be Pass or N/A).';
-        } else {
-            // Determine post-verify path from type config
-            $stmt = $conn->prepare("SELECT app_type FROM applications WHERE id = ?");
-            $stmt->bind_param('i', $appId);
-            $stmt->execute();
-            $stmt->bind_result($appType);
-            $stmt->fetch();
-            $stmt->close();
-            $next = APP_TYPES[$appType]['post_verify_status'] ?? 'approved';
-            if (app_set_status($conn, $appId, 'verified', 'site_manager', $managerId, 'checklist complete')) {
-                if ($next === 'induction_scheduled') {
-                    app_set_status($conn, $appId, 'induction_scheduled', 'site_manager', $managerId, 'induction to be arranged');
-                    $flash = 'Verified. Status set to induction scheduled - contact person to be e-mailed for the induction session.';
+        if (!appChecklistComplete($appId)) {
+            setFlash('error', 'Cannot verify — outstanding checklist items remain. Every check must be Pass or N/A.');
+            header('Location: application_admin.php?id=' . $appId); exit;
+        }
+        $stmt = db()->prepare("SELECT app_type FROM applications WHERE id=? LIMIT 1");
+        $stmt->execute([$appId]);
+        $appType = $stmt->fetchColumn();
+        $next = APP_TYPES[$appType]['post_verify_status'] ?? 'approved';
+
+        if (appSetStatus($appId, 'verified', 'site_manager', $managerId, 'checklist complete')) {
+            if ($next === 'induction_scheduled') {
+                // Contractor path — induction session before card issue
+                appSetStatus($appId, 'induction_scheduled', 'site_manager', $managerId, 'induction to be arranged');
+                // ── MAILER HOOK (induction): notify the contact person to
+                //    arrange the induction session, per the Status-Mark procedure.
+                //    Wire your existing mail routine here, e.g.:
+                //    appMailInduction($appId);
+                setFlash('success', 'Verified. Status: induction scheduled — arrange the induction session with the contact person.');
+            } else {
+                // Direct approval path (to_let / tenant / pet)
+                $conditions = appClean($_POST['approval_conditions'] ?? '', 2000);
+                db()->prepare(
+                    "UPDATE applications
+                     SET approved_by=?, approved_at=NOW(),
+                         approval_conditions=NULLIF(?, ''),
+                         valid_until=NULLIF(JSON_UNQUOTE(JSON_EXTRACT(type_data, '$.rental_to')), 'null')
+                     WHERE id=?"
+                )->execute([$managerId, $conditions, $appId]);
+                appSetStatus($appId, 'approved', 'site_manager', $managerId, 'approved after verification');
+
+                // ═══ LIVE-TABLE BRIDGES (wired) ═══
+                if ($appType === 'tenant') {
+                    [$tenantId, $residentId, $vehicles] = appBridgeTenantToLive($appId, $managerName);
+                    if ($tenantId > 0) {
+                        setFlash('success', "Tenant approved and bridged to live records: tenants #{$tenantId}"
+                            . ($residentId > 0 ? ", resident occupant record created" : ", NOTE: no occupant code available on this erf — create the resident manually")
+                            . ", {$vehicles} vehicle(s) whitelisted for LPR.");
+                    } else {
+                        setFlash('success', 'Tenant application approved. (Live records already existed for this application; nothing duplicated.)');
+                    }
+                } elseif ($appType === 'pet') {
+                    $petId = appBridgePetToLive($appId, $managerName);
+                    setFlash('success', $petId > 0
+                        ? "Pet approved and recorded in the live pets register (#{$petId})."
+                        : 'Pet application approved. (Live record already existed; nothing duplicated.)');
                 } else {
-                    // Direct approval path
-                    $conditions = app_clean((string)($_POST['approval_conditions'] ?? ''), 2000);
-                    $stmt = $conn->prepare(
-                        "UPDATE applications SET approved_by = ?, approved_at = NOW(),
-                         approval_conditions = NULLIF(?, ''),
-                         valid_until = NULLIF(JSON_UNQUOTE(JSON_EXTRACT(type_data, '$.rental_to')), 'null')
-                         WHERE id = ?");
-                    $stmt->bind_param('isi', $managerId, $conditions, $appId);
-                    $stmt->execute();
-                    $stmt->close();
-                    app_set_status($conn, $appId, 'approved', 'site_manager', $managerId, 'approved after verification');
-                    $flash = 'Application verified and approved.';
+                    setFlash('success', 'Application verified and approved.');
                 }
             }
+        } else {
+            setFlash('error', 'Status change not permitted from the current state.');
         }
+        header('Location: application_admin.php?id=' . $appId); exit;
     }
 
+    // ── Contractor: induction done → approve + BRIDGE to live SPs ──
     if ($action === 'approve_after_induction') {
-        // contractor path: induction_scheduled -> approved
-        if (app_set_status($conn, $appId, 'approved', 'site_manager', $managerId, 'induction completed')) {
-            $stmt = $conn->prepare("UPDATE applications SET approved_by = ?, approved_at = NOW() WHERE id = ?");
-            $stmt->bind_param('ii', $managerId, $appId);
-            $stmt->execute();
-            $stmt->close();
-            $flash = 'Induction confirmed - application approved. Access cards may be issued.';
-            // Hook: push approved workers into live service-provider tables + issue QR/UHF here.
+        if (appSetStatus($appId, 'approved', 'site_manager', $managerId, 'induction completed')) {
+            db()->prepare("UPDATE applications SET approved_by=?, approved_at=NOW() WHERE id=?")
+                ->execute([$managerId, $appId]);
+
+            // ═══ APPROVAL BRIDGE (wired) ═══
+            // Creates 1 contractor_lead (contact person, card permit) and one
+            // contractor_worker per verified worker (slip permit, linked to the
+            // lead), directly in the LIVE service_providers table with the same
+            // columns, '7XXXXX' codes and QR generation as security.php.
+            [$leadId, $workerCount] = appBridgeContractorToSp($appId, $managerName);
+
+            if ($leadId > 0) {
+                setFlash('success', "Induction confirmed — application approved. Bridged to live records: 1 contractor lead + {$workerCount} worker(s) created with QR codes. Print cards from SP Approvals.");
+            } else {
+                setFlash('success', 'Induction confirmed — application approved. (Live SP records already existed for this application; nothing duplicated.)');
+            }
+        } else {
+            setFlash('error', 'Status change not permitted from the current state.');
         }
+        header('Location: application_admin.php?id=' . $appId); exit;
     }
 
+    // ── Return for correction ──────────────────────────────
     if ($action === 'return') {
-        $reason = app_clean((string)($_POST['return_reason'] ?? ''), 2000);
+        $reason = appClean($_POST['return_reason'] ?? '', 2000);
         if ($reason === '') {
-            $flash = 'A reason is required when returning an application.';
+            setFlash('error', 'A reason is required when returning an application.');
         } else {
-            $stmt = $conn->prepare("UPDATE applications SET return_reason = ? WHERE id = ?");
-            $stmt->bind_param('si', $reason, $appId);
-            $stmt->execute();
-            $stmt->close();
-            app_set_status($conn, $appId, 'returned', 'site_manager', $managerId, 'returned: ' . mb_substr($reason, 0, 200));
-            $flash = 'Application returned to applicant with deficiencies listed.';
-            // Hook: e-mail applicant the resume link application_form.php?resume={resume_token}
+            db()->prepare("UPDATE applications SET return_reason=? WHERE id=?")->execute([$reason, $appId]);
+            appSetStatus($appId, 'returned', 'site_manager', $managerId, 'returned: ' . mb_substr($reason, 0, 200));
+
+            // ── MAILER HOOK (return): e-mail the applicant the deficiencies
+            //    plus their resume link. Token is already on the row:
+            //    $t = db()->prepare("SELECT applicant_email, resume_token FROM applications WHERE id=?");
+            //    $t->execute([$appId]); $row = $t->fetch();
+            //    Resume URL: SITE_URL . '/application_form.php?resume=' . $row['resume_token']
+            //    (full gemb.co.za URL — never through a shortener; token must arrive unmodified)
+            setFlash('success', 'Application returned to the applicant with the deficiencies listed.');
         }
+        header('Location: application_admin.php?id=' . $appId); exit;
     }
 
+    // ── Reject ─────────────────────────────────────────────
     if ($action === 'reject') {
-        $reason = app_clean((string)($_POST['reject_reason'] ?? ''), 2000);
+        $reason = appClean($_POST['return_reason'] ?? '', 2000);
         if ($reason === '') {
-            $flash = 'A reason is required when rejecting an application.';
+            setFlash('error', 'A reason is required when rejecting an application.');
         } else {
-            app_set_status($conn, $appId, 'rejected', 'site_manager', $managerId, 'rejected: ' . mb_substr($reason, 0, 200));
-            $flash = 'Application rejected.';
+            appSetStatus($appId, 'rejected', 'site_manager', $managerId, 'rejected: ' . mb_substr($reason, 0, 200));
+            setFlash('success', 'Application rejected.');
         }
+        header('Location: application_admin.php?id=' . $appId); exit;
     }
 
+    // ── Withdraw an approval (pet rule 1.3 / letting clause 6) ──
     if ($action === 'withdraw_approval') {
-        // e.g. pet rule 1.3, to_let clause 6
-        $reason = app_clean((string)($_POST['withdraw_reason'] ?? ''), 2000);
-        app_set_status($conn, $appId, 'withdrawn', 'site_manager', $managerId, 'approval withdrawn: ' . mb_substr($reason, 0, 200));
-        $flash = 'Approval withdrawn.';
+        $reason = appClean($_POST['withdraw_reason'] ?? '', 2000);
+        if (appSetStatus($appId, 'withdrawn', 'site_manager', $managerId, 'approval withdrawn: ' . mb_substr($reason, 0, 200))) {
+            // ═══ DEACTIVATION BRIDGE (wired) ═══ closes the linked live
+            // records too: tenants/pets → denied(+reason); tenant's resident
+            // row → inactive; their vehicles → active=0; contractor SPs → revoked.
+            appDeactivateBridged($appId, $reason !== '' ? $reason : 'Approval withdrawn by site manager');
+            setFlash('success', 'Approval withdrawn and linked live records deactivated.');
+        } else {
+            setFlash('error', 'Status change not permitted from the current state.');
+        }
+        header('Location: application_admin.php'); exit;
     }
+
+    header('Location: application_admin.php'); exit;
 }
 
-/* ---------- Detail view? ---------- */
-$detailId = (int)($_GET['id'] ?? 0);
+// ════════════════════════════════════════════════════════
+// DETAIL VIEW?
+// ════════════════════════════════════════════════════════
+$detailId = filter_var($_GET['id'] ?? 0, FILTER_VALIDATE_INT);
 $detail = null;
 if ($detailId) {
-    $stmt = $conn->prepare("SELECT * FROM applications WHERE id = ?");
-    $stmt->bind_param('i', $detailId);
-    $stmt->execute();
-    $detail = $stmt->get_result()->fetch_assoc();
-    $stmt->close();
+    $stmt = db()->prepare("SELECT * FROM applications WHERE id=? LIMIT 1");
+    $stmt->execute([$detailId]);
+    $detail = $stmt->fetch();
 }
 
-/* ---------- Queue query ---------- */
-$statusFilter = app_clean((string)($_GET['status'] ?? 'pending_verification'), 30);
-$validStatuses = array_merge(array_keys(APP_TRANSITIONS), ['all']);
-if (!in_array($statusFilter, $validStatuses, true)) $statusFilter = 'pending_verification';
-?>
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Applications - Site Manager - gemB</title>
-<style>
-:root { --navy:#1a2f5a; --teal:#1a8a8a; --bg:#f5f7fa; --line:#d7dee8; --err:#b00020; --ok:#1a7a3a; --warn:#a86a00; }
-* { box-sizing:border-box; }
-body { font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); margin:0; color:#222; }
-.wrap { max-width:1000px; margin:0 auto; padding:16px; }
-header.gemb { background:var(--navy); color:#fff; padding:16px; }
-header.gemb h1 { margin:0; font-size:1.2rem; }
-.filters a { display:inline-block; padding:6px 12px; margin:12px 6px 0 0; border-radius:16px; background:#fff; border:1px solid var(--line); color:var(--navy); text-decoration:none; font-size:.85rem; }
-.filters a.active { background:var(--teal); color:#fff; border-color:var(--teal); }
-table.queue { width:100%; border-collapse:collapse; background:#fff; border:1px solid var(--line); border-radius:8px; overflow:hidden; margin-top:12px; }
-table.queue th, table.queue td { padding:10px 12px; text-align:left; font-size:.88rem; border-bottom:1px solid var(--line); }
-table.queue th { background:var(--navy); color:#fff; }
-table.queue tr:hover td { background:#f0f6f6; }
-.badge { display:inline-block; padding:2px 10px; border-radius:12px; font-size:.75rem; color:#fff; }
-.b-pending_verification { background:var(--warn); } .b-submitted { background:#888; }
-.b-verified,.b-induction_scheduled { background:var(--teal); } .b-approved { background:var(--ok); }
-.b-returned { background:#c77; } .b-rejected,.b-withdrawn,.b-expired { background:var(--err); }
-.card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:18px; margin:16px 0; }
-.card h2 { color:var(--navy); font-size:1.05rem; margin:0 0 10px; border-bottom:2px solid var(--teal); padding-bottom:6px; }
-dl { display:grid; grid-template-columns:220px 1fr; gap:4px 12px; font-size:.9rem; margin:0; }
-dt { color:#666; } dd { margin:0; }
-table.checks { width:100%; border-collapse:collapse; font-size:.87rem; }
-table.checks td, table.checks th { padding:8px; border-bottom:1px solid var(--line); vertical-align:top; }
-select.res { padding:6px; border-radius:6px; border:1px solid var(--line); }
-select.res.pass { background:#eaf7ee; } select.res.fail { background:#fdecec; }
-input.cmt { width:100%; padding:6px; border:1px solid var(--line); border-radius:6px; }
-.btnrow { display:flex; gap:10px; flex-wrap:wrap; margin-top:14px; }
-button.b { border:none; border-radius:8px; padding:12px 20px; font-size:.92rem; cursor:pointer; color:#fff; }
-.b-save { background:var(--navy); } .b-verify { background:var(--ok); } .b-return { background:var(--warn); } .b-reject { background:var(--err); }
-textarea { width:100%; min-height:70px; border:1px solid var(--line); border-radius:6px; padding:8px; font-family:inherit; }
-.flash { background:#eef6f6; border-left:4px solid var(--teal); padding:10px 14px; margin:12px 0; font-size:.9rem; }
-.doclink { font-size:.85rem; }
-.note { font-size:.8rem; color:#666; }
-</style>
-</head>
-<body>
-<header class="gemb"><div class="wrap"><h1>Application Verification &mdash; Site Manager</h1></div></header>
-<div class="wrap">
-<?php if ($flash): ?><div class="flash"><?= h($flash) ?></div><?php endif; ?>
+// ════════════════════════════════════════════════════════
+// QUEUE VIEW
+// ════════════════════════════════════════════════════════
+if (!$detail) {
 
-<?php if (!$detail): /* ================= QUEUE VIEW ================= */ ?>
+    // Whitelist status filter — same pattern as security.php logs/approvals
+    $filter = $_GET['status'] ?? 'pending_verification';
+    if (!in_array($filter, array_merge(array_keys(APP_TRANSITIONS), ['all']), true)) {
+        $filter = 'pending_verification';
+    }
 
-<div class="filters">
-<?php foreach (['pending_verification' => 'Pending', 'submitted' => 'Awaiting co-sign', 'induction_scheduled' => 'Induction', 'returned' => 'Returned', 'approved' => 'Approved', 'all' => 'All'] as $s => $lbl): ?>
-  <a href="?status=<?= h($s) ?>" class="<?= $statusFilter === $s ? 'active' : '' ?>"><?= h($lbl) ?></a>
-<?php endforeach; ?>
-</div>
+    if ($filter === 'all') {
+        $apps = db()->query(
+            "SELECT id, app_ref, app_type, applicant_name, company_name, erf_no, submitted_at, status
+             FROM applications ORDER BY submitted_at DESC LIMIT 200"
+        )->fetchAll();
+    } else {
+        // Oldest first for work queues — first received = first served
+        $stmt = db()->prepare(
+            "SELECT id, app_ref, app_type, applicant_name, company_name, erf_no, submitted_at, status
+             FROM applications WHERE status=? ORDER BY submitted_at ASC LIMIT 200"
+        );
+        $stmt->execute([$filter]);
+        $apps = $stmt->fetchAll();
+    }
 
-<table class="queue">
-<tr><th>Ref</th><th>Type</th><th>Applicant / Company</th><th>Erf</th><th>Submitted</th><th>Status</th><th></th></tr>
-<?php
-if ($statusFilter === 'all') {
-    $stmt = $conn->prepare("SELECT id, app_ref, app_type, applicant_name, company_name, erf_no, submitted_at, status FROM applications ORDER BY submitted_at DESC LIMIT 200");
-} else {
-    $stmt = $conn->prepare("SELECT id, app_ref, app_type, applicant_name, company_name, erf_no, submitted_at, status FROM applications WHERE status = ? ORDER BY submitted_at ASC LIMIT 200");
-    $stmt->bind_param('s', $statusFilter);
-}
-$stmt->execute();
-$rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-$stmt->close();
-if (!$rows) echo '<tr><td colspan="7" style="text-align:center;color:#888">No applications in this view.</td></tr>';
-foreach ($rows as $r): ?>
-<tr>
-  <td><?= h($r['app_ref']) ?></td>
-  <td><?= h(APP_TYPES[$r['app_type']]['label'] ?? $r['app_type']) ?></td>
-  <td><?= h($r['company_name'] ?: $r['applicant_name']) ?></td>
-  <td><?= h((string)$r['erf_no']) ?></td>
-  <td><?= h((string)$r['submitted_at']) ?></td>
-  <td><span class="badge b-<?= h($r['status']) ?>"><?= h(str_replace('_', ' ', $r['status'])) ?></span></td>
-  <td><a href="?id=<?= (int)$r['id'] ?>">Open</a></td>
-</tr>
-<?php endforeach; ?>
-</table>
+    pageHeader('Applications', 'security');
+    renderHeader('📋 Application Verification', 'security.php?action=menu');
+    ?>
+    <div class="container">
+      <?= getFlash() ?>
 
-<?php else: /* ================= DETAIL / CHECKLIST VIEW ================= */
-$cfg = APP_TYPES[$detail['app_type']];
+      <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
+        <?php foreach ([
+            'pending_verification' => '⏳ Pending',
+            'submitted'            => '✍️ Awaiting Co-sign',
+            'induction_scheduled'  => '🎓 Induction',
+            'returned'             => '↩️ Returned',
+            'approved'             => '✅ Approved',
+            'all'                  => '📋 All',
+        ] as $s => $label): ?>
+        <a href="application_admin.php?status=<?= $s ?>"
+           class="btn btn-sm <?= $filter === $s ? 'btn-primary' : 'btn-secondary' ?>"><?= $label ?></a>
+        <?php endforeach; ?>
+      </div>
+
+      <?php if (empty($apps)): ?>
+        <div class="card"><p style="color:#666;">No applications in this category.</p></div>
+      <?php endif; ?>
+
+      <?php foreach ($apps as $a):
+        $cfg = APP_TYPES[$a['app_type']] ?? null;
+        $statusColors = [
+            'pending_verification' => '#ffc107', 'submitted' => '#888',
+            'verified' => '#17a2b8', 'induction_scheduled' => '#17a2b8',
+            'approved' => '#28a745', 'returned' => '#e67e22',
+            'rejected' => '#dc3545', 'withdrawn' => '#dc3545', 'expired' => '#aaa',
+        ];
+        $col = $statusColors[$a['status']] ?? '#999';
+      ?>
+      <div class="card" style="border-left:4px solid <?= $col ?>">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <div>
+            <strong><?= $cfg ? $cfg['icon'] : '' ?> <?= htmlspecialchars($a['company_name'] ?: $a['applicant_name']) ?></strong>
+            <span style="color:#666;font-size:.82rem;margin-left:6px;"><?= htmlspecialchars($cfg['label'] ?? $a['app_type']) ?></span>
+            <div style="font-size:.8rem;color:#999;margin-top:2px;font-family:monospace;">
+              <?= htmlspecialchars($a['app_ref']) ?>
+              <?= $a['erf_no'] ? ' &nbsp;|&nbsp; Erf ' . htmlspecialchars($a['erf_no']) : '' ?>
+              &nbsp;|&nbsp; <?= $a['submitted_at'] ? date('d M Y H:i', strtotime($a['submitted_at'])) : '—' ?>
+            </div>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <span class="badge badge-<?= in_array($a['status'], ['approved']) ? 'success' : (in_array($a['status'], ['rejected', 'withdrawn', 'expired']) ? 'danger' : 'warning') ?>">
+              <?= str_replace('_', ' ', $a['status']) ?>
+            </span>
+            <a href="application_admin.php?id=<?= $a['id'] ?>" class="btn btn-primary btn-sm">Open</a>
+          </div>
+        </div>
+      </div>
+      <?php endforeach; ?>
+    </div>
+    <?php pageFooter(); exit; ?>
+<?php } // end queue
+
+// ════════════════════════════════════════════════════════
+// DETAIL / CHECKLIST VIEW
+// ════════════════════════════════════════════════════════
+$cfg      = APP_TYPES[$detail['app_type']];
 $typeData = $detail['type_data'] ? json_decode($detail['type_data'], true) : [];
 
-$stmt = $conn->prepare("SELECT * FROM application_items WHERE application_id = ? ORDER BY item_type, id");
-$stmt->bind_param('i', $detailId);
-$stmt->execute();
-$items = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-$stmt->close();
+$stmt = db()->prepare("SELECT * FROM application_items WHERE application_id=? ORDER BY item_type, id");
+$stmt->execute([$detailId]);
+$items = $stmt->fetchAll();
 
-$stmt = $conn->prepare("SELECT * FROM application_documents WHERE application_id = ?");
-$stmt->bind_param('i', $detailId);
-$stmt->execute();
-$docs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-$stmt->close();
+$stmt = db()->prepare("SELECT * FROM application_documents WHERE application_id=?");
+$stmt->execute([$detailId]);
+$docs = $stmt->fetchAll();
 $docsByItem = [];
 foreach ($docs as $d) $docsByItem[$d['item_id'] ?? 0][] = $d;
 
-$stmt = $conn->prepare("SELECT * FROM application_checklist WHERE application_id = ? ORDER BY item_id IS NULL DESC, item_id, id");
-$stmt->bind_param('i', $detailId);
-$stmt->execute();
-$checks = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-$stmt->close();
+$stmt = db()->prepare("SELECT * FROM application_checklist WHERE application_id=? ORDER BY item_id IS NULL DESC, item_id, id");
+$stmt->execute([$detailId]);
+$checks = $stmt->fetchAll();
 
-$stmt = $conn->prepare("SELECT * FROM application_payments WHERE application_id = ?");
-$stmt->bind_param('i', $detailId);
-$stmt->execute();
-$payment = $stmt->get_result()->fetch_assoc();
-$stmt->close();
+$stmt = db()->prepare("SELECT * FROM application_payments WHERE application_id=? LIMIT 1");
+$stmt->execute([$detailId]);
+$payment = $stmt->fetch();
 
-$stmt = $conn->prepare("SELECT ack_code, acknowledged_by, acknowledged_at FROM application_acknowledgements WHERE application_id = ? ORDER BY id");
-$stmt->bind_param('i', $detailId);
-$stmt->execute();
-$acks = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-$stmt->close();
+$stmt = db()->prepare("SELECT ack_code, acknowledged_by, acknowledged_at FROM application_acknowledgements WHERE application_id=? ORDER BY id");
+$stmt->execute([$detailId]);
+$acks = $stmt->fetchAll();
 
 $itemNames = [];
 foreach ($items as $it) {
-    $itemNames[$it['id']] = trim(($it['first_name'] ?? '') . ' ' . ($it['surname'] ?? ''))
-        ?: ($it['vehicle_reg'] ?? '')
-        ?: ($it['pet_species'] ? $it['pet_species'] . ' (' . $it['pet_breed'] . ')' : '')
-        ?: ('#' . $it['id']);
+    $n = trim(($it['first_name'] ?? '') . ' ' . ($it['surname'] ?? ''));
+    if ($n === '') $n = $it['vehicle_reg'] ?? '';
+    if ($n === '' && !empty($it['pet_name'])) $n = $it['pet_name'] . ' — ' . ($it['pet_species'] ?? '') . ' (' . ($it['pet_breed'] ?? '') . ')';
+    if ($n === '') $n = $it['pet_species'] ? $it['pet_species'] . ' (' . ($it['pet_breed'] ?? '') . ')' : '';
+    $itemNames[$it['id']] = $n !== '' ? $n : ('#' . $it['id']);
 }
+
+pageHeader('Application ' . $detail['app_ref'], 'security');
+renderHeader($cfg['icon'] . ' ' . htmlspecialchars($detail['app_ref']), 'application_admin.php');
 ?>
-<p><a href="application_admin.php">&larr; Back to queue</a></p>
+<div class="container">
+  <?= getFlash() ?>
 
-<div class="card">
-  <h2><?= h($detail['app_ref']) ?> &mdash; <?= h($cfg['label']) ?>
-      <span class="badge b-<?= h($detail['status']) ?>"><?= h(str_replace('_', ' ', $detail['status'])) ?></span></h2>
-  <dl>
-    <dt>Applicant</dt><dd><?= h($detail['applicant_name']) ?> (<?= h((string)$detail['applicant_email']) ?>, <?= h((string)$detail['applicant_phone']) ?>)</dd>
-    <?php if ($detail['company_name']): ?>
-      <dt>Company</dt><dd><?= h($detail['company_name']) ?> &middot; <?= h((string)$detail['company_type']) ?> &middot; Reg: <?= h((string)$detail['company_reg_no']) ?> &middot; Owner: <?= h((string)$detail['company_owner']) ?></dd>
-    <?php endif; ?>
-    <?php if ($detail['erf_no']): ?><dt>Erf</dt><dd><?= h($detail['erf_no']) ?></dd><?php endif; ?>
-    <?php if ($detail['reg_type']): ?><dt>Registration type</dt><dd><?= h($cfg['reg_types'][$detail['reg_type']] ?? $detail['reg_type']) ?></dd><?php endif; ?>
-    <?php foreach ($typeData as $k => $v): ?>
-      <dt><?= h($cfg['type_fields'][$k] ?? $k) ?></dt><dd><?= h((string)$v) ?></dd>
+  <!-- ── Application summary ─────────────────────────── -->
+  <div class="card">
+    <div class="card-title"><?= htmlspecialchars($cfg['label']) ?>
+      <span class="badge badge-<?= $detail['status'] === 'approved' ? 'success' : (in_array($detail['status'], ['rejected', 'withdrawn', 'expired']) ? 'danger' : 'warning') ?>" style="margin-left:8px;">
+        <?= str_replace('_', ' ', $detail['status']) ?>
+      </span>
+    </div>
+    <div class="table-wrap"><table>
+      <tr><td style="min-width:180px;color:#666;">Applicant</td>
+          <td><?= htmlspecialchars($detail['applicant_name']) ?> — <?= htmlspecialchars($detail['applicant_email'] ?? '') ?>, <?= htmlspecialchars($detail['applicant_phone'] ?? '') ?></td></tr>
+      <?php if ($detail['company_name']): ?>
+      <tr><td style="color:#666;">Company</td>
+          <td><?= htmlspecialchars($detail['company_name']) ?> · <?= htmlspecialchars($detail['company_type'] ?? '') ?> · Reg: <?= htmlspecialchars($detail['company_reg_no'] ?? '') ?> · Owner: <?= htmlspecialchars($detail['company_owner'] ?? '') ?></td></tr>
+      <?php endif; ?>
+      <?php if ($detail['erf_no']): ?>
+      <tr><td style="color:#666;">Erf</td><td><?= htmlspecialchars($detail['erf_no']) ?></td></tr>
+      <?php endif; ?>
+      <?php if ($detail['reg_type']): ?>
+      <tr><td style="color:#666;">Registration type</td><td><?= htmlspecialchars($cfg['reg_types'][$detail['reg_type']] ?? $detail['reg_type']) ?></td></tr>
+      <?php endif; ?>
+      <?php foreach ($typeData as $k => $v): ?>
+      <tr><td style="color:#666;"><?= htmlspecialchars($cfg['type_fields'][$k] ?? $k) ?></td><td><?= htmlspecialchars((string)$v) ?></td></tr>
+      <?php endforeach; ?>
+      <?php if ($detail['owner_name']): ?>
+      <tr><td style="color:#666;">Owner (co-sign)</td>
+          <td><?= htmlspecialchars($detail['owner_name']) ?> —
+          <?= $detail['owner_signed_at']
+              ? '<span style="color:#28a745;">✅ signed ' . htmlspecialchars($detail['owner_signed_at']) . '</span>'
+              : '<strong style="color:#e67e22;">⏳ not yet signed</strong>' ?></td></tr>
+      <?php endif; ?>
+      <?php if ($detail['linked_app_id']): ?>
+      <tr><td style="color:#666;">Linked to-let application</td><td>#<?= (int)$detail['linked_app_id'] ?></td></tr>
+      <?php endif; ?>
+      <tr><td style="color:#666;">Submitted</td><td><?= htmlspecialchars($detail['submitted_at'] ?? '—') ?></td></tr>
+      <?php if ($detail['return_reason']): ?>
+      <tr><td style="color:#666;">Last return reason</td><td style="color:#e67e22;"><?= htmlspecialchars($detail['return_reason']) ?></td></tr>
+      <?php endif; ?>
+    </table></div>
+  </div>
+
+  <!-- ── Items + per-item documents ──────────────────── -->
+  <?php if (!empty($items)): ?>
+  <div class="card">
+    <div class="card-title">Items</div>
+    <?php foreach ($items as $it): ?>
+    <div style="padding:8px 0;border-bottom:1px solid #eee;">
+      <strong><?= htmlspecialchars(ucfirst($it['item_type'])) ?>:</strong>
+      <?= htmlspecialchars($itemNames[$it['id']]) ?>
+      <?php if ($it['id_number']): ?>
+        <span style="font-size:.85rem;color:#666;">· ID: <?= htmlspecialchars($it['id_number']) ?><?= $it['id_is_passport'] ? ' (passport)' : '' ?></span>
+        <?php if ($it['is_asylum']): ?><span class="badge badge-warning" style="font-size:.72rem;">ASYLUM — HA verification required</span><?php endif; ?>
+      <?php endif; ?>
+      <?php if ($it['pet_adult_weight_kg'] !== null): ?>
+        <span style="font-size:.85rem;color:#666;">· Adult weight: <?= htmlspecialchars((string)$it['pet_adult_weight_kg']) ?> kg</span>
+      <?php endif; ?>
+      <?php foreach ($docsByItem[$it['id']] ?? [] as $d): ?>
+        <div style="font-size:.85rem;margin-top:3px;">
+          📎 <?= htmlspecialchars($d['doc_type']) ?>:
+          <a href="application_doc.php?id=<?= (int)$d['id'] ?>" target="_blank"><?= htmlspecialchars($d['orig_filename']) ?></a>
+          <span style="color:#999;">(<?= number_format($d['file_size'] / 1024) ?> KB<?= $d['doc_date'] ? ', issued ' . htmlspecialchars($d['doc_date']) : '' ?>)</span>
+        </div>
+      <?php endforeach; ?>
+    </div>
     <?php endforeach; ?>
-    <?php if ($detail['owner_name']): ?>
-      <dt>Owner (co-sign)</dt><dd><?= h($detail['owner_name']) ?> &mdash; <?= $detail['owner_signed_at'] ? 'signed ' . h($detail['owner_signed_at']) : '<strong style="color:var(--warn)">not yet signed</strong>' ?></dd>
-    <?php endif; ?>
-    <?php if ($detail['linked_app_id']): ?><dt>Linked to-let app</dt><dd>#<?= (int)$detail['linked_app_id'] ?></dd><?php endif; ?>
-    <dt>Submitted</dt><dd><?= h((string)$detail['submitted_at']) ?></dd>
-  </dl>
-</div>
-
-<?php if ($items): ?>
-<div class="card">
-  <h2>Items</h2>
-  <?php foreach ($items as $it): ?>
-    <p><strong><?= h(ucfirst($it['item_type'])) ?>:</strong> <?= h($itemNames[$it['id']]) ?>
-    <?php if ($it['id_number']): ?> &middot; ID: <?= h($it['id_number']) ?><?= $it['id_is_passport'] ? ' (passport)' : '' ?><?= $it['is_asylum'] ? ' &middot; <strong>asylum seeker</strong>' : '' ?><?php endif; ?>
-    <?php if ($it['pet_adult_weight_kg'] !== null): ?> &middot; Adult weight: <?= h((string)$it['pet_adult_weight_kg']) ?> kg<?php endif; ?>
-    </p>
-    <?php foreach ($docsByItem[$it['id']] ?? [] as $d): ?>
-      <p class="doclink">&mdash; <?= h($d['doc_type']) ?>: <a href="application_doc.php?id=<?= (int)$d['id'] ?>" target="_blank"><?= h($d['orig_filename']) ?></a>
-      (<?= number_format($d['file_size'] / 1024) ?> KB<?= $d['doc_date'] ? ', issued ' . h($d['doc_date']) : '' ?>)</p>
-    <?php endforeach; ?>
-  <?php endforeach; ?>
-</div>
-<?php endif; ?>
-
-<?php if (!empty($docsByItem[0])): ?>
-<div class="card">
-  <h2>Application Documents</h2>
-  <?php foreach ($docsByItem[0] as $d): ?>
-    <p class="doclink">&mdash; <?= h($d['doc_type']) ?>: <a href="application_doc.php?id=<?= (int)$d['id'] ?>" target="_blank"><?= h($d['orig_filename']) ?></a> (<?= number_format($d['file_size'] / 1024) ?> KB)</p>
-  <?php endforeach; ?>
-</div>
-<?php endif; ?>
-
-<div class="card">
-  <h2>Acknowledgements (<?= count($acks) ?> recorded)</h2>
-  <p class="note"><?php foreach ($acks as $a): ?><?= h($a['ack_code']) ?> (<?= h($a['acknowledged_by']) ?>, <?= h($a['acknowledged_at']) ?>)<br><?php endforeach; ?></p>
-</div>
-
-<form method="post">
-<input type="hidden" name="csrf" value="<?= h($csrf) ?>">
-<input type="hidden" name="app_id" value="<?= (int)$detailId ?>">
-
-<?php if ($payment): ?>
-<div class="card">
-  <h2>Payment</h2>
-  <p>Amount due: <strong>R<?= number_format((float)$payment['amount_due'], 2) ?></strong> (<?= h((string)$payment['amount_basis']) ?>)</p>
-  <label><input type="checkbox" name="payment_verified" value="1" <?= $payment['verified'] ? 'checked' : '' ?>> Payment received and verified against bank statement</label>
-</div>
-<?php endif; ?>
-
-<div class="card">
-  <h2>Verification Checklist</h2>
-  <table class="checks">
-  <tr><th style="width:38%">Check</th><th style="width:16%">Result</th><th>Comment (required on Fail)</th></tr>
-  <?php foreach ($checks as $c): ?>
-    <tr>
-      <td><?= $c['item_id'] ? '<em>' . h($itemNames[$c['item_id']] ?? '#') . ':</em> ' : '' ?><?= h($c['check_label']) ?></td>
-      <td>
-        <select class="res <?= h($c['result']) ?>" name="check[<?= (int)$c['id'] ?>]">
-          <?php foreach (['pending' => '— pending —', 'pass' => 'Pass', 'fail' => 'Fail', 'n_a' => 'N/A'] as $v => $l): ?>
-            <option value="<?= $v ?>" <?= $c['result'] === $v ? 'selected' : '' ?>><?= $l ?></option>
-          <?php endforeach; ?>
-        </select>
-      </td>
-      <td><input class="cmt" name="comment[<?= (int)$c['id'] ?>]" value="<?= h((string)$c['comment']) ?>" maxlength="500"></td>
-    </tr>
-  <?php endforeach; ?>
-  </table>
-
-  <?php if (!empty($cfg['approval_conditions_field'])): ?>
-    <label style="display:block;margin-top:12px;font-size:.85rem;color:#444">Approval remarks / conditions (recorded on the approval)</label>
-    <textarea name="approval_conditions"><?= h((string)$detail['approval_conditions']) ?></textarea>
+  </div>
   <?php endif; ?>
 
-  <div class="btnrow">
-    <button class="b b-save" name="action" value="save_checks">Save checklist</button>
+  <?php if (!empty($docsByItem[0])): ?>
+  <div class="card">
+    <div class="card-title">Application Documents</div>
+    <?php foreach ($docsByItem[0] as $d): ?>
+      <div style="font-size:.88rem;padding:4px 0;">
+        📎 <?= htmlspecialchars($d['doc_type']) ?>:
+        <a href="application_doc.php?id=<?= (int)$d['id'] ?>" target="_blank"><?= htmlspecialchars($d['orig_filename']) ?></a>
+        <span style="color:#999;">(<?= number_format($d['file_size'] / 1024) ?> KB)</span>
+      </div>
+    <?php endforeach; ?>
+  </div>
+  <?php endif; ?>
+
+  <div class="card">
+    <div class="card-title">Acknowledgements (<?= count($acks) ?> recorded)</div>
+    <div style="font-size:.8rem;color:#666;">
+      <?php foreach ($acks as $a): ?>
+        ✔ <?= htmlspecialchars($a['ack_code']) ?>
+        <span style="color:#999;">(<?= htmlspecialchars($a['acknowledged_by']) ?>, <?= htmlspecialchars($a['acknowledged_at']) ?>)</span><br>
+      <?php endforeach; ?>
+    </div>
+  </div>
+
+  <!-- ── Checklist + actions ─────────────────────────── -->
+  <form method="POST" action="application_admin.php">
+    <?= csrfField() ?>
+    <input type="hidden" name="app_id" value="<?= (int)$detailId ?>">
+
+    <?php if ($payment): ?>
+    <div class="card">
+      <div class="card-title">Payment</div>
+      <p style="font-size:.9rem;">Amount due: <strong>R<?= number_format((float)$payment['amount_due'], 2) ?></strong>
+         <span style="color:#666;">(<?= htmlspecialchars($payment['amount_basis'] ?? '') ?>)</span></p>
+      <label style="display:flex;align-items:center;gap:8px;font-size:.9rem;cursor:pointer;">
+        <input type="checkbox" name="payment_verified" value="1" <?= $payment['verified'] ? 'checked' : '' ?>>
+        Payment received and verified against the bank statement
+      </label>
+    </div>
+    <?php endif; ?>
+
+    <div class="card">
+      <div class="card-title">Verification Checklist</div>
+      <div class="table-wrap"><table>
+        <tr><th style="width:42%;">Check</th><th style="width:16%;">Result</th><th>Comment (required on Fail)</th></tr>
+        <?php foreach ($checks as $c): ?>
+        <tr>
+          <td style="font-size:.87rem;">
+            <?= $c['item_id'] ? '<em>' . htmlspecialchars($itemNames[$c['item_id']] ?? '#') . ':</em> ' : '' ?>
+            <?= htmlspecialchars($c['check_label']) ?>
+          </td>
+          <td>
+            <select name="check[<?= (int)$c['id'] ?>]"
+                    style="padding:6px;border:1px solid #dee2e6;border-radius:6px;
+                           background:<?= $c['result'] === 'pass' ? '#e8f8ee' : ($c['result'] === 'fail' ? '#fdecec' : '#fff') ?>;">
+              <?php foreach (['pending' => '— pending —', 'pass' => '✅ Pass', 'fail' => '❌ Fail', 'n_a' => 'N/A'] as $v => $l): ?>
+                <option value="<?= $v ?>" <?= $c['result'] === $v ? 'selected' : '' ?>><?= $l ?></option>
+              <?php endforeach; ?>
+            </select>
+          </td>
+          <td><input type="text" name="comment[<?= (int)$c['id'] ?>]"
+                     value="<?= htmlspecialchars($c['comment'] ?? '') ?>" maxlength="500"
+                     style="width:100%;padding:6px;border:1px solid #dee2e6;border-radius:6px;font-size:.85rem;"></td>
+        </tr>
+        <?php endforeach; ?>
+      </table></div>
+
+      <?php if (!empty($cfg['approval_conditions_field'])): ?>
+      <div class="form-group" style="margin-top:12px;">
+        <label>Approval remarks / conditions (recorded on the approval, per the pet form)</label>
+        <textarea name="approval_conditions" rows="2"
+                  style="width:100%;padding:8px;border:1px solid #dee2e6;border-radius:6px;"><?= htmlspecialchars($detail['approval_conditions'] ?? '') ?></textarea>
+      </div>
+      <?php endif; ?>
+
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;">
+        <button type="submit" name="app_action" value="save_checks" class="btn btn-primary">💾 Save Checklist</button>
+        <?php if ($detail['status'] === 'pending_verification'): ?>
+        <button type="submit" name="app_action" value="verify" class="btn btn-success"
+                onclick="return confirm('Confirm: all checklist items pass and this application is verified?')">
+          ✅ Verify<?= $cfg['post_verify_status'] === 'approved' ? ' & Approve' : '' ?>
+        </button>
+        <?php endif; ?>
+        <?php if ($detail['status'] === 'induction_scheduled'): ?>
+        <button type="submit" name="app_action" value="approve_after_induction" class="btn btn-success"
+                onclick="return confirm('Confirm induction completed? This approves the application and creates the live contractor lead + worker records with QR codes.')">
+          🎓 Induction Done → Approve & Create Access Records
+        </button>
+        <?php endif; ?>
+      </div>
+    </div>
+
     <?php if ($detail['status'] === 'pending_verification'): ?>
-      <button class="b b-verify" name="action" value="verify"
-        onclick="return confirm('Confirm: all checklist items pass and this application is verified?')">Verify<?= $cfg['post_verify_status'] === 'approved' ? ' &amp; Approve' : '' ?></button>
+    <div class="card" style="border-left:4px solid #e67e22;">
+      <div class="card-title">↩️ Return or ❌ Reject</div>
+      <div class="form-group">
+        <label>Reason (sent to the applicant)</label>
+        <textarea name="return_reason" rows="3"
+                  placeholder="List the specific deficiencies, e.g. Worker 2: police clearance older than 6 months."
+                  style="width:100%;padding:8px;border:1px solid #dee2e6;border-radius:6px;"></textarea>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <button type="submit" name="app_action" value="return" class="btn btn-warning"
+                onclick="return confirm('Return this application for correction?')">↩️ Return for Correction</button>
+        <button type="submit" name="app_action" value="reject" class="btn btn-danger"
+                onclick="return confirm('Permanently reject this application?')">❌ Reject</button>
+      </div>
+    </div>
     <?php endif; ?>
-    <?php if ($detail['status'] === 'induction_scheduled'): ?>
-      <button class="b b-verify" name="action" value="approve_after_induction"
-        onclick="return confirm('Confirm induction completed and approve for access card issue?')">Induction done &rarr; Approve</button>
+
+    <?php if ($detail['status'] === 'approved'): ?>
+    <div class="card" style="border-left:4px solid #dc3545;">
+      <div class="card-title">🚫 Withdraw Approval</div>
+      <p style="font-size:.85rem;color:#666;">For breach of conditions (pet rule 1.3, letting clause 6).</p>
+      <div class="form-group">
+        <textarea name="withdraw_reason" rows="2" placeholder="Reason for withdrawal"
+                  style="width:100%;padding:8px;border:1px solid #dee2e6;border-radius:6px;"></textarea>
+      </div>
+      <button type="submit" name="app_action" value="withdraw_approval" class="btn btn-danger"
+              onclick="return confirm('Withdraw this approval? This cannot be undone.')">Withdraw Approval</button>
+    </div>
     <?php endif; ?>
-  </div>
-</div>
+  </form>
 
-<?php if (in_array($detail['status'], ['pending_verification'], true)): ?>
-<div class="card">
-  <h2>Return or Reject</h2>
-  <label style="font-size:.85rem;color:#444">Reason (sent to the applicant)</label>
-  <textarea name="return_reason" placeholder="List the specific deficiencies, e.g. Worker 2: police clearance older than 6 months."></textarea>
-  <input type="hidden" name="reject_reason" value="">
-  <div class="btnrow">
-    <button class="b b-return" name="action" value="return"
-      onclick="this.form.reject_reason.value=''; return confirm('Return this application for correction?')">Return for correction</button>
-    <button class="b b-reject" name="action" value="reject"
-      onclick="this.form.reject_reason.value=this.form.return_reason.value; return confirm('Permanently reject this application?')">Reject</button>
-  </div>
+  <div class="popia-notice">Verification actions are permanently logged per POPIA §11.</div>
 </div>
-<?php endif; ?>
-
-<?php if ($detail['status'] === 'approved'): ?>
-<div class="card">
-  <h2>Withdraw Approval</h2>
-  <p class="note">Use for breach of conditions (e.g. pet rule 1.3, letting clause 6).</p>
-  <textarea name="withdraw_reason" placeholder="Reason for withdrawal"></textarea>
-  <div class="btnrow">
-    <button class="b b-reject" name="action" value="withdraw_approval"
-      onclick="return confirm('Withdraw this approval? This cannot be undone.')">Withdraw approval</button>
-  </div>
-</div>
-<?php endif; ?>
-</form>
-
-<?php endif; ?>
-</div>
-</body>
-</html>
+<?php pageFooter(); ?>

@@ -1,52 +1,54 @@
 <?php
-/**
- * gemB - Public/resident application form (config-driven)
- * URL: application_form.php?type=contractor|to_let|tenant|pet
- * Resume returned application: application_form.php?resume={token}
- *
- * One template renders all four application types from APP_TYPES.
- */
-declare(strict_types=1);
+// ============================================================
+// GEMB Access Control — application_form.php (public)
+// One config-driven form for all four application types:
+//   application_form.php?type=contractor|to_let|tenant|pet
+// Resume a returned application:
+//   application_form.php?resume={token}
+// Conventions: PDO via db(), csrfField()/verifyCsrfToken() from layout.php.
+// ============================================================
 require_once __DIR__ . '/application_lib.php';
+if (session_status() === PHP_SESSION_NONE) session_start();
 
-$csrf = app_csrf_token();
 $errors = [];
 $successRef = null;
 
-/* ---------- Resolve type (or resume token) ---------- */
+// ── Resolve type (or resume token) ────────────────────────
 $resumeApp = null;
 if (!empty($_GET['resume'])) {
-    $tok = app_clean((string)$_GET['resume'], 64);
-    $stmt = $conn->prepare("SELECT id, app_type, status, return_reason FROM applications WHERE resume_token = ? AND status IN ('draft','returned') LIMIT 1");
-    $stmt->bind_param('s', $tok);
-    $stmt->execute();
-    $resumeApp = $stmt->get_result()->fetch_assoc();
-    $stmt->close();
+    $tok = appClean((string)$_GET['resume'], 64);
+    if (preg_match('/^[a-f0-9]{64}$/', $tok)) {
+        $stmt = db()->prepare(
+            "SELECT id, app_type, status, return_reason FROM applications
+             WHERE resume_token=? AND status IN ('draft','returned') LIMIT 1"
+        );
+        $stmt->execute([$tok]);
+        $resumeApp = $stmt->fetch();
+    }
     if (!$resumeApp) { http_response_code(404); exit('Link expired or invalid.'); }
     $type = $resumeApp['app_type'];
 } else {
-    $type = app_clean((string)($_GET['type'] ?? ''), 20);
+    $type = appClean((string)($_GET['type'] ?? ''), 20);
 }
 if (!isset(APP_TYPES[$type])) { http_response_code(404); exit('Unknown application type.'); }
 $cfg = APP_TYPES[$type];
 
-/* ---------- Handle submission ---------- */
+// ── Handle submission ─────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    verifyCsrfToken();
 
-    if (!app_csrf_check($_POST['csrf'] ?? null)) {
-        $errors[] = 'Security token invalid. Please reload the page.';
-    } elseif (!app_rate_limit($conn, 'form_submit_' . $type, 5, 3600)) {
+    if (!appRateLimit('form_submit_' . $type, 5, 3600)) {
         $errors[] = 'Too many submissions from this address. Please try again later.';
     } else {
 
-        /* ----- Applicant fields ----- */
-        $applicantName  = app_clean((string)($_POST['applicant_name'] ?? ''), 120);
-        $applicantIdNo  = app_clean((string)($_POST['applicant_id_no'] ?? ''), 30);
+        // ── Applicant fields ──
+        $applicantName  = appClean($_POST['applicant_name'] ?? '', 120);
+        $applicantIdNo  = appClean($_POST['applicant_id_no'] ?? '', 30);
         $applicantEmail = filter_var((string)($_POST['applicant_email'] ?? ''), FILTER_VALIDATE_EMAIL) ?: '';
-        $applicantPhone = app_clean((string)($_POST['applicant_phone'] ?? ''), 30);
+        $applicantPhone = appClean($_POST['applicant_phone'] ?? '', 30);
         $applicantIsTenant = !empty($_POST['applicant_is_tenant']) ? 1 : 0;
-        $erfNo   = app_clean((string)($_POST['erf_no'] ?? ''), 10);
-        $regType = app_clean((string)($_POST['reg_type'] ?? ''), 30);
+        $erfNo   = strtoupper(appClean($_POST['erf_no'] ?? '', 10));
+        $regType = appClean($_POST['reg_type'] ?? '', 30);
 
         if ($applicantName === '')  $errors[] = 'Applicant name is required.';
         if ($applicantEmail === '') $errors[] = 'A valid e-mail address is required.';
@@ -54,60 +56,59 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($cfg['requires_erf'] && $erfNo === '') $errors[] = 'Erf number is required.';
         if (!empty($cfg['reg_types']) && !isset($cfg['reg_types'][$regType])) $errors[] = 'Please select a registration type.';
 
-        /* ----- Company block ----- */
+        // ── Company block (contractor) ──
         $companyName = $companyType = $companyRegNo = $companyOwner = null;
         if (!empty($cfg['company_block'])) {
-            $companyName  = app_clean((string)($_POST['company_name'] ?? ''), 150);
-            $companyType  = app_clean((string)($_POST['company_type'] ?? ''), 60);
-            $companyRegNo = app_clean((string)($_POST['company_reg_no'] ?? ''), 40);
-            $companyOwner = app_clean((string)($_POST['company_owner'] ?? ''), 120);
+            $companyName  = appClean($_POST['company_name'] ?? '', 150);
+            $companyType  = appClean($_POST['company_type'] ?? '', 60);
+            $companyRegNo = appClean($_POST['company_reg_no'] ?? '', 40);
+            $companyOwner = appClean($_POST['company_owner'] ?? '', 120);
             if ($companyName === '')  $errors[] = 'Company name is required.';
             if (!in_array($companyType, $cfg['company_types'], true)) $errors[] = 'Please select a valid company type.';
             if ($companyRegNo === '') $errors[] = 'Company registration number / owner ID is required.';
         }
 
-        /* ----- Second party (owner) ----- */
+        // ── Second party (owner co-sign) ──
         $ownerName = $ownerIdNo = $ownerEmail = $ownerPhone = null;
         $needsOwner = ($cfg['second_party'] === 'owner')
                    || ($cfg['second_party'] === 'owner_if_tenant' && $applicantIsTenant);
         if ($needsOwner) {
-            $ownerName  = app_clean((string)($_POST['owner_name'] ?? ''), 120);
-            $ownerIdNo  = app_clean((string)($_POST['owner_id_no'] ?? ''), 30);
+            $ownerName  = appClean($_POST['owner_name'] ?? '', 120);
+            $ownerIdNo  = appClean($_POST['owner_id_no'] ?? '', 30);
             $ownerEmail = filter_var((string)($_POST['owner_email'] ?? ''), FILTER_VALIDATE_EMAIL) ?: '';
-            $ownerPhone = app_clean((string)($_POST['owner_phone'] ?? ''), 30);
+            $ownerPhone = appClean($_POST['owner_phone'] ?? '', 30);
             if ($ownerName === '' || $ownerEmail === '') {
                 $errors[] = 'Owner name and e-mail are required so the owner can co-sign electronically.';
             }
         }
 
-        /* ----- Type-specific fields -> JSON ----- */
+        // ── Type-specific fields → JSON ──
         $typeData = [];
         foreach ($cfg['type_fields'] ?? [] as $key => $label) {
-            $typeData[$key] = app_clean((string)($_POST['tf_' . $key] ?? ''), 120);
+            $typeData[$key] = appClean($_POST['tf_' . $key] ?? '', 120);
             if ($typeData[$key] === '') $errors[] = $label . ' is required.';
         }
-        if ($type === 'tenant' || $type === 'to_let') {
-            if (!empty($typeData['rental_from']) && !empty($typeData['rental_to'])
-                && $typeData['rental_to'] < $typeData['rental_from']) {
-                $errors[] = 'Rental period end date is before the start date.';
-            }
+        if (in_array($type, ['tenant', 'to_let'], true)
+            && !empty($typeData['rental_from']) && !empty($typeData['rental_to'])
+            && $typeData['rental_to'] < $typeData['rental_from']) {
+            $errors[] = 'Rental period end date is before the start date.';
         }
 
-        /* ----- Dependency: tenant requires current approved to_let ----- */
+        // ── Dependency: tenant requires current approved to_let ──
         $linkedAppId = null;
         if ($cfg['depends_on'] === 'to_let' && $erfNo !== '' && empty($errors)) {
-            $linkedAppId = app_find_current_to_let($conn, $erfNo);
+            $linkedAppId = appFindCurrentToLet($erfNo);
             if ($linkedAppId === null) {
                 $errors[] = 'Erf ' . htmlspecialchars($erfNo) . ' does not have a current approved "Member Registration to Let". The owner must complete that registration first.';
             }
         }
 
-        /* ----- Pet pre-checks ----- */
-        if ($type === 'pet' && $erfNo !== '' && empty($errors) && app_erf_has_approved_pet($conn, $erfNo)) {
+        // ── Pet pre-checks (rule 1.2.1) ──
+        if ($type === 'pet' && $erfNo !== '' && empty($errors) && appErfHasApprovedPet($erfNo)) {
             $errors[] = 'An approved pet is already registered on this erf (Conduct Rule 1.2.1: one pet per erf).';
         }
 
-        /* ----- Items (workers / occupants / vehicles / pet) ----- */
+        // ── Items (workers / occupants / vehicles / pet) ──
         $items = [];
         foreach ($cfg['items'] as $itemType => $itemCfg) {
             $rows = $_POST['items'][$itemType] ?? [];
@@ -119,14 +120,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $blank = true;
                 foreach ($itemCfg['fields'] as $f) {
                     $v = $row[$f] ?? '';
-                    $v = is_string($v) ? app_clean($v, 120) : ($v ? '1' : '0');
+                    $v = is_string($v) ? appClean($v, 120) : ($v ? '1' : '0');
                     $clean[$f] = $v;
                     if ($v !== '' && $v !== '0') $blank = false;
                 }
                 if ($blank) continue;
-                // Field-level validation
                 if (in_array('id_number', $itemCfg['fields'], true) && !empty($clean['id_number'])
-                    && empty($clean['id_is_passport']) && !app_valid_sa_id($clean['id_number'])) {
+                    && empty($clean['id_is_passport']) && !appValidSaId($clean['id_number'])) {
                     $errors[] = ucfirst($itemType) . ' #' . ($count + 1) . ': SA ID number fails validation (tick "passport" if not an SA ID).';
                 }
                 if ($itemType === 'pet' && isset($clean['pet_adult_weight_kg'])) {
@@ -140,10 +140,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $count++;
             }
             if ($count < ($itemCfg['min'] ?? 0)) $errors[] = 'At least ' . $itemCfg['min'] . ' ' . strtolower($itemCfg['label']) . ' entry is required.';
-            if (isset($itemCfg['max']) && $count > $itemCfg['max']) $errors[] = 'A maximum of ' . $itemCfg['max'] . ' ' . strtolower($itemCfg['label']) . ' is allowed.';
+            if ($count > ($itemCfg['max'] ?? 99)) $errors[] = 'A maximum of ' . $itemCfg['max'] . ' ' . strtolower($itemCfg['label']) . ' is allowed.';
         }
 
-        /* ----- Acknowledgements: every clause must be individually ticked ----- */
+        // ── Acknowledgements: every clause must be ticked ──
         foreach ($cfg['acks'] as $code => $text) {
             if (empty($_POST['ack'][$code])) {
                 $errors[] = 'All undertakings must be acknowledged before submission.';
@@ -151,77 +151,74 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
-        /* ----- Persist (transaction) ----- */
+        // ── Persist (transaction) ──
         if (empty($errors)) {
-            $conn->begin_transaction();
+            $pdo = db();
+            $pdo->beginTransaction();
             try {
-                $ref = app_new_ref($conn);
-                $resumeToken = app_secure_token();
-                $ownerSignToken = $needsOwner ? app_secure_token() : null;
-                $typeDataJson = $typeData ? json_encode($typeData, JSON_UNESCAPED_UNICODE) : null;
-                $ip = $_SERVER['REMOTE_ADDR'] ?? null;
+                $ref            = appNewRef();
+                $resumeToken    = appSecureToken();
+                $ownerSignToken = $needsOwner ? appSecureToken() : null;
+                $typeDataJson   = $typeData ? json_encode($typeData, JSON_UNESCAPED_UNICODE) : null;
 
-                $stmt = $conn->prepare(
+                $pdo->prepare(
                     "INSERT INTO applications
                      (app_ref, app_type, reg_type, erf_no, linked_app_id, status,
                       applicant_name, applicant_id_no, applicant_email, applicant_phone, applicant_is_tenant,
                       company_name, company_type, company_reg_no, company_owner,
                       owner_name, owner_id_no, owner_email, owner_phone, owner_sign_token,
                       type_data, resume_token, submitted_at, submit_ip)
-                     VALUES (?,?,?,?,?,'submitted',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW(),?)");
-                $regTypeDb = $regType !== '' ? $regType : null;
-                $erfDb = $erfNo !== '' ? $erfNo : null;
-                $stmt->bind_param('ssssissssissssssssssss',
-                    $ref, $type, $regTypeDb, $erfDb, $linkedAppId,
+                     VALUES (?,?,?,?,?,'submitted',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW(),?)"
+                )->execute([
+                    $ref, $type, ($regType !== '' ? $regType : null), ($erfNo !== '' ? $erfNo : null), $linkedAppId,
                     $applicantName, $applicantIdNo, $applicantEmail, $applicantPhone, $applicantIsTenant,
                     $companyName, $companyType, $companyRegNo, $companyOwner,
                     $ownerName, $ownerIdNo, $ownerEmail, $ownerPhone, $ownerSignToken,
-                    $typeDataJson, $resumeToken, $ip);
-                $stmt->execute();
-                $appId = $stmt->insert_id;
-                $stmt->close();
+                    $typeDataJson, $resumeToken, $_SERVER['REMOTE_ADDR'] ?? null,
+                ]);
+                $appId = (int)$pdo->lastInsertId();
 
-                app_log($conn, $appId, null, 'submitted', 'applicant', null, 'form_submit_' . $type);
+                appLog($appId, null, 'submitted', 'applicant', null, 'form_submit_' . $type);
 
-                /* Items */
-                $itemIdMap = [];   // "itemType:idx" => db id (for matching uploads)
+                // Items
+                $insItem = $pdo->prepare(
+                    "INSERT INTO application_items
+                     (application_id, item_type, first_name, surname, id_number, id_is_passport, is_asylum,
+                      email, vehicle_make, vehicle_reg, vehicle_colour,
+                      pet_name, pet_species, pet_breed, pet_size, pet_age, pet_adult_weight_kg)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                );
+                $itemIdMap = [];   // "itemType:idx" => db id, for matching uploads
                 foreach ($items as $it) {
-                    $stmt = $conn->prepare(
-                        "INSERT INTO application_items
-                         (application_id, item_type, first_name, surname, id_number, id_is_passport, is_asylum,
-                          email, vehicle_make, vehicle_reg, vehicle_colour,
-                          pet_species, pet_breed, pet_size, pet_age, pet_adult_weight_kg)
-                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
-                    $fn = $it['first_name'] ?? null;      $sn = $it['surname'] ?? null;
-                    $idn = $it['id_number'] ?? null;      $pas = (int)($it['id_is_passport'] ?? 0);
-                    $asy = (int)($it['is_asylum'] ?? 0);  $em = $it['email'] ?? null;
-                    $vm = $it['vehicle_make'] ?? null;    $vr = $it['vehicle_reg'] ?? null;
-                    $vc = $it['vehicle_colour'] ?? null;  $ps = $it['pet_species'] ?? null;
-                    $pb = $it['pet_breed'] ?? null;       $psz = $it['pet_size'] ?? null;
-                    $pa = $it['pet_age'] ?? null;
-                    $pw = isset($it['pet_adult_weight_kg']) && $it['pet_adult_weight_kg'] !== '' ? (float)$it['pet_adult_weight_kg'] : null;
-                    $stmt->bind_param('issssiissssssssd',
-                        $appId, $it['item_type'], $fn, $sn, $idn, $pas, $asy, $em,
-                        $vm, $vr, $vc, $ps, $pb, $psz, $pa, $pw);
-                    $stmt->execute();
-                    $itemIdMap[$it['item_type'] . ':' . $it['idx']] = $stmt->insert_id;
-                    $stmt->close();
+                    $insItem->execute([
+                        $appId, $it['item_type'],
+                        $it['first_name'] ?? null, $it['surname'] ?? null,
+                        $it['id_number'] ?? null, (int)($it['id_is_passport'] ?? 0), (int)($it['is_asylum'] ?? 0),
+                        $it['email'] ?? null,
+                        $it['vehicle_make'] ?? null, $it['vehicle_reg'] ?? null, $it['vehicle_colour'] ?? null,
+                        $it['pet_name'] ?? null, $it['pet_species'] ?? null, $it['pet_breed'] ?? null, $it['pet_size'] ?? null,
+                        $it['pet_age'] ?? null,
+                        (isset($it['pet_adult_weight_kg']) && $it['pet_adult_weight_kg'] !== '') ? (float)$it['pet_adult_weight_kg'] : null,
+                    ]);
+                    $itemIdMap[$it['item_type'] . ':' . $it['idx']] = (int)$pdo->lastInsertId();
                 }
 
-                /* Per-item document uploads: field name docs[itemType][idx][docType] */
+                // Per-item documents: docs[itemType][idx][docType]
                 foreach ($cfg['items'] as $itemType => $itemCfg) {
                     foreach ($itemCfg['docs'] as $docType => $docCfg) {
                         foreach ($itemIdMap as $key => $dbId) {
                             [$kType, $kIdx] = explode(':', $key);
                             if ($kType !== $itemType) continue;
-                            $fileKey = $_FILES['docs']['name'][$itemType][$kIdx][$docType] ?? null;
+
                             if (!empty($docCfg['required_if'])) {
                                 $row = $_POST['items'][$itemType][$kIdx] ?? [];
                                 $required = !empty($row[$docCfg['required_if']]);
                             } else {
                                 $required = !empty($docCfg['required']);
                             }
-                            if ($fileKey === null || $fileKey === '') {
+
+                            $name = $_FILES['docs']['name'][$itemType][$kIdx][$docType] ?? '';
+                            if ($name === '' || $name === null) {
                                 if ($required) throw new RuntimeException(ucfirst($itemType) . ' #' . ((int)$kIdx + 1) . ': "' . $docCfg['label'] . '" is required.');
                                 continue;
                             }
@@ -234,24 +231,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             ];
                             $docDate = null;
                             if (!empty($docCfg['needs_date'])) {
-                                $docDate = app_clean((string)($_POST['doc_date'][$itemType][$kIdx][$docType] ?? ''), 10);
+                                $docDate = appClean($_POST['doc_date'][$itemType][$kIdx][$docType] ?? '', 10);
                                 if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $docDate)) {
                                     throw new RuntimeException('Issue date is required for "' . $docCfg['label'] . '".');
                                 }
-                                if (!empty($docCfg['max_age_days'])) {
-                                    $ageDays = (int)((time() - strtotime($docDate)) / 86400);
-                                    if ($ageDays > $docCfg['max_age_days']) {
-                                        throw new RuntimeException(ucfirst($itemType) . ' #' . ((int)$kIdx + 1) . ': police clearance is older than 6 months.');
-                                    }
+                                if (!empty($docCfg['max_age_days'])
+                                    && (int)((time() - strtotime($docDate)) / 86400) > $docCfg['max_age_days']) {
+                                    throw new RuntimeException(ucfirst($itemType) . ' #' . ((int)$kIdx + 1) . ': police clearance is older than 6 months.');
                                 }
                             }
-                            [$ok, $msg] = app_store_upload($conn, $appId, $dbId, $docType, $file, $docDate);
+                            [$ok, $msg] = appStoreUpload($appId, $dbId, $docType, $file, $docDate);
                             if (!$ok) throw new RuntimeException($docCfg['label'] . ': ' . $msg);
                         }
                     }
                 }
 
-                /* Application-level documents */
+                // Application-level documents
                 foreach ($cfg['app_docs'] as $docType => $docCfg) {
                     $name = $_FILES['app_docs']['name'][$docType] ?? '';
                     if ($name === '') {
@@ -265,55 +260,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'error'    => $_FILES['app_docs']['error'][$docType],
                         'size'     => $_FILES['app_docs']['size'][$docType],
                     ];
-                    [$ok, $msg] = app_store_upload($conn, $appId, null, $docType, $file);
+                    [$ok, $msg] = appStoreUpload($appId, null, $docType, $file);
                     if (!$ok) throw new RuntimeException($docCfg['label'] . ': ' . $msg);
                 }
 
-                /* Payment record */
+                // Payment record
                 if (!empty($cfg['payment'])) {
                     $workerCount = 0;
                     foreach ($items as $it) if ($it['item_type'] === 'worker') $workerCount++;
                     if ($cfg['payment']['per'] === 'worker') {
-                        $due = $cfg['payment']['amount'] * max(1, $workerCount);
+                        $due   = $cfg['payment']['amount'] * max(1, $workerCount);
                         $basis = sprintf('R%.2f x %d worker(s)', $cfg['payment']['amount'], $workerCount);
                     } else {
-                        $due = $cfg['payment']['amount'];
+                        $due   = $cfg['payment']['amount'];
                         $basis = 'Per Letting Procedure tariff';
                     }
-                    $stmt = $conn->prepare(
-                        "INSERT INTO application_payments (application_id, amount_due, amount_basis) VALUES (?,?,?)");
-                    $stmt->bind_param('ids', $appId, $due, $basis);
-                    $stmt->execute();
-                    $stmt->close();
+                    $pdo->prepare(
+                        "INSERT INTO application_payments (application_id, amount_due, amount_basis) VALUES (?,?,?)"
+                    )->execute([$appId, $due, $basis]);
                 }
 
-                /* Acknowledgements */
+                // Acknowledgements (per clause, hashed, timestamped)
                 foreach ($cfg['acks'] as $code => $text) {
-                    app_record_ack($conn, $appId, $code, $text, 'applicant');
+                    appRecordAck($appId, $code, $text, 'applicant');
                 }
 
-                /* Checklist */
-                app_generate_checklist($conn, $appId, $type);
+                // Checklist for the site manager
+                appGenerateChecklist($appId, $type);
 
-                /* If no owner co-sign needed, move straight to pending_verification */
                 if (!$needsOwner) {
-                    app_set_status($conn, $appId, 'pending_verification', 'system', null, 'no co-sign required');
+                    appSetStatus($appId, 'pending_verification', 'system', null, 'no co-sign required');
                 }
-                // Else: e-mail $ownerEmail a link to application_cosign.php?token=$ownerSignToken
-                // (mail dispatch via existing gemB mailer; token page records owner acks + owner_signed_at,
-                //  then transitions submitted -> pending_verification)
+                // ── MAILER HOOK (owner co-sign): when $needsOwner is true the
+                //    application waits at 'submitted' until the owner confirms.
+                //    E-mail $ownerEmail the link (full URL, never shortened):
+                //    SITE_URL . '/application_cosign.php?token=' . $ownerSignToken
+                //    Wire your existing gemB mail routine here, e.g.:
+                //    appMailOwnerCosign($ownerEmail, $ownerName, $ref, $ownerSignToken);
 
-                $conn->commit();
+                $pdo->commit();
                 $successRef = $ref;
             } catch (Throwable $e) {
-                $conn->rollback();
+                $pdo->rollBack();
                 $errors[] = $e->getMessage();
             }
         }
     }
 }
 
-/* ---------- Render ---------- */
 function h(string $s): string { return htmlspecialchars($s, ENT_QUOTES, 'UTF-8'); }
 ?>
 <!DOCTYPE html>
@@ -321,7 +315,7 @@ function h(string $s): string { return htmlspecialchars($s, ENT_QUOTES, 'UTF-8')
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title><?= h($cfg['label']) ?> - gemB</title>
+<title><?= h($cfg['label']) ?> — GEMB</title>
 <style>
 :root { --navy:#1a2f5a; --teal:#1a8a8a; --bg:#f5f7fa; --line:#d7dee8; --err:#b00020; --ok:#1a7a3a; }
 * { box-sizing:border-box; }
@@ -356,8 +350,8 @@ input:focus,select:focus { outline:2px solid var(--teal); border-color:var(--tea
 <body>
 <header class="gemb">
   <div class="wrap">
-    <h1><?= h($cfg['label']) ?></h1>
-    <div class="sub">Mossel Bay Golf Estate HOA &middot; gemB Access &amp; Governance Platform</div>
+    <h1><?= $cfg['icon'] ?> <?= h($cfg['label']) ?></h1>
+    <div class="sub">Mossel Bay Golf Estate HOA · GEMB Access &amp; Governance Platform</div>
   </div>
 </header>
 <div class="wrap">
@@ -366,12 +360,13 @@ input:focus,select:focus { outline:2px solid var(--teal); border-color:var(--tea
   <div class="okbox">
     <p>Your application has been submitted successfully.</p>
     <p class="ref"><?= h($successRef) ?></p>
-    <p>Please keep this reference. <?php if ($type === 'contractor'): ?>The contact person will receive an e-mail to arrange an induction session once verification is complete.<?php elseif (($cfg['second_party'] ?? false)): ?>Where owner co-signature is required, the owner will receive an e-mail link to confirm before verification begins.<?php else: ?>You will be notified by e-mail once the site manager has verified your application.<?php endif; ?></p>
+    <p><?php if ($type === 'contractor'): ?>Please keep this reference. The contact person will receive an e-mail to arrange an induction session once verification is complete.<?php elseif ($cfg['second_party']): ?>Please keep this reference. Where owner co-signature is required, the owner will receive an e-mail link to confirm before verification begins.<?php else: ?>Please keep this reference. You will be notified by e-mail once the site manager has verified your application.<?php endif; ?></p>
   </div>
 <?php else: ?>
 
 <?php if ($resumeApp && $resumeApp['status'] === 'returned'): ?>
-  <div class="retbox"><strong>Returned for correction:</strong> <?= h((string)$resumeApp['return_reason']) ?></div>
+  <div class="retbox"><strong>Returned for correction:</strong> <?= h((string)$resumeApp['return_reason']) ?><br>
+  <span class="note">Please complete the form again with the corrections and resubmit.</span></div>
 <?php endif; ?>
 
 <?php if ($errors): ?>
@@ -381,13 +376,13 @@ input:focus,select:focus { outline:2px solid var(--teal); border-color:var(--tea
 <?php endif; ?>
 
 <form method="post" enctype="multipart/form-data" id="appform">
-<input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+<?= csrfField() ?>
 
 <?php if (!empty($cfg['reg_types'])): ?>
 <div class="card">
   <h2>Registration Type</h2>
   <select name="reg_type" required>
-    <option value="">-- Select --</option>
+    <option value="">— Select —</option>
     <?php foreach ($cfg['reg_types'] as $k => $v): ?>
       <option value="<?= h($k) ?>"><?= h($v) ?></option>
     <?php endforeach; ?>
@@ -403,7 +398,7 @@ input:focus,select:focus { outline:2px solid var(--teal); border-color:var(--tea
     <div><label>E-mail address *</label><input type="email" name="applicant_email" required maxlength="150"></div>
     <div><label>Contact number *</label><input type="text" name="applicant_phone" required maxlength="30"></div>
     <?php if ($cfg['requires_erf']): ?>
-      <div><label>Erf number *</label><input type="text" name="erf_no" required maxlength="10"></div>
+      <div><label>Erf number *</label><input type="text" name="erf_no" required maxlength="10" style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase()"></div>
     <?php endif; ?>
     <?php if ($cfg['second_party'] === 'owner_if_tenant'): ?>
       <div><label style="margin-top:28px"><input type="checkbox" name="applicant_is_tenant" value="1" id="isTenant"> I am a tenant (not the registered owner)</label></div>
@@ -417,7 +412,7 @@ input:focus,select:focus { outline:2px solid var(--teal); border-color:var(--tea
   <div class="row">
     <div><label>Company name *</label><input type="text" name="company_name" required maxlength="150"></div>
     <div><label>Company type *</label>
-      <select name="company_type" required><option value="">-- Select --</option>
+      <select name="company_type" required><option value="">— Select —</option>
       <?php foreach ($cfg['company_types'] as $ct): ?><option><?= h($ct) ?></option><?php endforeach; ?>
       </select></div>
     <div><label>Registration number / owner ID *</label><input type="text" name="company_reg_no" required maxlength="40"></div>
@@ -431,7 +426,7 @@ input:focus,select:focus { outline:2px solid var(--teal); border-color:var(--tea
   <h2>Property &amp; Period</h2>
   <div class="row">
   <?php foreach ($cfg['type_fields'] as $key => $label):
-        $isDate = str_contains($key, 'date') || str_contains($key, 'from') || str_contains($key, 'to'); ?>
+        $isDate = str_contains($key, 'date') || str_contains($key, 'from') || str_contains($key, '_to'); ?>
     <div><label><?= h($label) ?> *</label>
       <input type="<?= $isDate ? 'date' : 'text' ?>" name="tf_<?= h($key) ?>" required maxlength="120"></div>
   <?php endforeach; ?>
@@ -488,7 +483,7 @@ input:focus,select:focus { outline:2px solid var(--teal); border-color:var(--tea
 
 <div class="card acks">
   <h2>Undertakings &amp; Acknowledgements</h2>
-  <p class="note">Each item must be acknowledged individually. Your acknowledgements are recorded with a timestamp.</p>
+  <p class="note">Each item must be acknowledged individually. Your acknowledgements are recorded with a timestamp per POPIA.</p>
   <?php foreach ($cfg['acks'] as $code => $text): ?>
     <label><input type="checkbox" name="ack[<?= h($code) ?>]" value="1" required> <?= h($text) ?></label>
   <?php endforeach; ?>
@@ -504,7 +499,7 @@ const TARIFF = <?= json_encode(!empty($cfg['payment']) && $cfg['payment']['per']
 const FIELD_LABELS = {first_name:'First name', surname:'Surname', id_number:'ID / passport number',
   id_is_passport:'This is a passport (not SA ID)', is_asylum:'Asylum seeker (Home Affairs verification required)',
   email:'E-mail address', vehicle_make:'Make', vehicle_reg:'Registration number', vehicle_colour:'Colour',
-  pet_species:'Species', pet_breed:'Breed', pet_size:'Size', pet_age:'Age', pet_adult_weight_kg:'Adult breed weight (kg, max 15)'};
+  pet_name:'Pet name', pet_species:'Species', pet_breed:'Breed', pet_size:'Size', pet_age:'Age', pet_adult_weight_kg:'Adult breed weight (kg, max 15)'};
 let counters = {};
 
 function addItem(type) {
@@ -521,11 +516,11 @@ function addItem(type) {
   for (const f of cfg.fields) {
     const label = FIELD_LABELS[f] || f;
     if (f === 'id_is_passport' || f === 'is_asylum') {
-      html += `<div><label style="margin-top:24px"><input type="checkbox" name="items[${type}][${idx}][${f}]" value="1"${f === 'is_asylum' ? ` onchange="toggleAsylum(this,'${type}',${idx})"` : ''}> ${label}</label></div>`;
+      html += `<div><label style="margin-top:24px"><input type="checkbox" name="items[${type}][${idx}][${f}]" value="1"${f === 'is_asylum' ? ` onchange="toggleAsylum(this)"` : ''}> ${label}</label></div>`;
     } else if (f === 'pet_adult_weight_kg') {
       html += `<div><label>${label} *</label><input type="number" step="0.1" min="0.1" max="99" name="items[${type}][${idx}][${f}]" required></div>`;
     } else {
-      html += `<div><label>${label}${['first_name','surname','id_number','pet_species','pet_breed','vehicle_make','vehicle_reg'].includes(f) ? ' *' : ''}</label><input type="text" name="items[${type}][${idx}][${f}]" maxlength="120"></div>`;
+      html += `<div><label>${label}${['first_name','surname','id_number','pet_name','pet_species','pet_breed','vehicle_make','vehicle_reg'].includes(f) ? ' *' : ''}</label><input type="text" name="items[${type}][${idx}][${f}]" maxlength="120"></div>`;
     }
   }
   html += '</div>';
@@ -541,7 +536,7 @@ function addItem(type) {
   updateTotal();
 }
 
-function toggleAsylum(cb, type, idx) {
+function toggleAsylum(cb) {
   const block = cb.closest('.itemblock');
   block.querySelectorAll('[data-condoc="is_asylum"]').forEach(el => {
     el.style.display = cb.checked ? '' : 'none';
@@ -564,11 +559,9 @@ if (isTenantCb) {
   });
 }
 
-// Seed minimum rows
+// Seed one row per repeater on load
 for (const [type, cfg] of Object.entries(ITEM_CFG)) {
-  const seed = Math.max(cfg.min, cfg.max === 1 ? 1 : cfg.min);
-  for (let i = 0; i < Math.max(seed, cfg.max === 1 ? 1 : 0); i++) addItem(type);
-  if (seed === 0 && cfg.max > 1) addItem(type);   // show one optional row for convenience
+  addItem(type);
 }
 </script>
 <?php endif; ?>
