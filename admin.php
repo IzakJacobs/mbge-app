@@ -305,6 +305,22 @@ function adminGrantAccess(array $adm): void {
 
 // ── MENU ──────────────────────────────────────────────────
 if ($action === 'menu') {
+    // Resident requests awaiting admin approval:
+    // engine applications (to-let / tenant / pet / estate agent)
+    // + visitor pet requests (Conduct Rule 1.4)
+    try {
+        $pendingApps = db()->query(
+            "SELECT
+               (SELECT COUNT(*) FROM applications
+                WHERE app_type IN ('to_let','tenant','pet','estate_agent')
+                  AND status IN ('pending_verification','induction_scheduled'))
+             + (SELECT COUNT(*) FROM pets
+                WHERE pet_type='visitor' AND status='pending')"
+        )->fetchColumn();
+    } catch (Exception $e) {
+        $pendingApps = 0;   // engine tables not installed yet — button still works
+    }
+
     pageHeader('Admin Menu', 'admin');
     renderHeader('⚙️ Admin — ' . ($_SESSION['admin_name'] ?? ''), 'logout.php');
     ?>
@@ -314,9 +330,9 @@ if ($action === 'menu') {
         <a href="residents_admin.php?action=list" class="menu-btn"><span class="icon">🏠</span>Residents</a>
         
          <a href="admin_approvals.php" class="menu-btn">
-          <span class="icon">📋</span>Tenant &amp; Pet Approvals
-          <?php if ($pendingTP > 0): ?>
-            <span class="badge badge-warning"><?= $pendingTP ?></span>
+          <span class="icon">📋</span>Approvals of Resident Requests
+          <?php if ($pendingApps > 0): ?>
+            <span class="badge badge-warning"><?= $pendingApps ?></span>
           <?php endif; ?>
         </a>
         
