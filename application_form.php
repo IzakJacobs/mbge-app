@@ -327,6 +327,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $pdo->commit();
                 $successRef = $ref;
+
+                // ── Office capture: take the site manager straight to the
+                //    verification checklist instead of the public success page.
+                if ($officeMode) {
+                    setFlash('success', "Application {$successRef} captured. Work through the verification checklist below — Verify unlocks only when every item is Pass or N/A.");
+                    header('Location: application_admin.php?id=' . $appId); exit;
+                }
             } catch (Throwable $e) {
                 $pdo->rollBack();
                 $errors[] = $e->getMessage();

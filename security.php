@@ -1132,6 +1132,25 @@ if ($action === 'approvals') {
         'contractor_worker' => ['icon'=>'🪖','label'=>'Contractor Worker'],
     ];
 
+    // ── Map invite codes → engine application (Application Engine).
+    //    Lets each Contractor Lead card show the live application status
+    //    instead of "Capture Application" once one has been submitted.
+    $appByInvite = [];
+    try {
+        foreach (db()->query("
+            SELECT id, app_ref, status,
+                   JSON_UNQUOTE(JSON_EXTRACT(type_data, '$.invite_code')) AS invite_code
+            FROM applications
+            WHERE app_type = 'contractor'
+              AND JSON_EXTRACT(type_data, '$.invite_code') IS NOT NULL
+            ORDER BY id ASC
+        ") as $ar) {
+            if (!empty($ar['invite_code'])) $appByInvite[$ar['invite_code']] = $ar; // latest wins
+        }
+    } catch (Exception $e) {
+        $appByInvite = [];   // engine tables not installed — cards fall back to Capture Application
+    }
+
     pageHeader('SP Approvals', 'security');
     renderHeader('✅ Service Provider Approvals', 'security.php?action=menu');
     ?>
@@ -1197,9 +1216,18 @@ if ($action === 'approvals') {
             <span class="badge badge-<?= $isExpired?'muted':($isApproved?'success':'warning') ?>"><?= $statusLabel ?></span>
             <?php if (!$isApproved && !$isExpired): ?>
               <?php if (($sp['category'] ?? '') === 'contractor_lead'
-                        && strpos($sp['notes'] ?? '', '[gemB APP-') === false): ?>
-              <a href="application_form.php?type=contractor&invite=<?= urlencode($sp['unique_code'] ?? '') ?>"
-                 class="btn btn-primary btn-sm">📋 Capture Application</a>
+                        && strpos($sp['notes'] ?? '', '[gemB APP-') === false):
+                    $linkedApp = $appByInvite[$sp['unique_code'] ?? ''] ?? null; ?>
+                <?php if ($linkedApp): ?>
+                <a href="application_admin.php?id=<?= (int)$linkedApp['id'] ?>"
+                   class="btn btn-warning btn-sm"
+                   title="<?= htmlspecialchars($linkedApp['app_ref']) ?>">
+                  🔎 Application: <?= htmlspecialchars(str_replace('_', ' ', $linkedApp['status'])) ?>
+                </a>
+                <?php else: ?>
+                <a href="application_form.php?type=contractor&invite=<?= urlencode($sp['unique_code'] ?? '') ?>"
+                   class="btn btn-primary btn-sm">📋 Capture Application</a>
+                <?php endif; ?>
               <?php else: ?>
               <form method="POST" style="display:inline">
                 <?= csrfField() ?>
