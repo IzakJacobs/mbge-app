@@ -437,6 +437,31 @@ function appBridgeContractorToSp(int $appId, string $approverName): array {
     $endDate   = date('Y-m-d', strtotime('+' . APP_CARD_VALID_MONTHS . ' months'));
     $noteTag   = '[gemB ' . $app['app_ref'] . ']';
 
+    // ── Resident invite linkage: if the application was completed from a
+    //    resident's Contractor Lead invite (type_data.invite_code), inherit
+    //    that resident's erf/name (as sp_add does from a lead) and supersede
+    //    the placeholder invite record so it cannot be approved separately.
+    $resErfno = '';
+    $resName  = 'GEMB Estate';
+    $td = $app['type_data'] ? json_decode($app['type_data'], true) : [];
+    if (!empty($td['invite_code']) && preg_match('/^\d{6}$/', (string)$td['invite_code'])) {
+        $inv = $pdo->prepare(
+            "SELECT id, resident_erfno, resident_name FROM service_providers
+             WHERE unique_code = ? AND category = 'contractor_lead' LIMIT 1"
+        );
+        $inv->execute([$td['invite_code']]);
+        if ($invRow = $inv->fetch()) {
+            $resErfno = $invRow['resident_erfno'] ?? '';
+            $resName  = $invRow['resident_name'] ?: 'GEMB Estate';
+            $pdo->prepare(
+                "UPDATE service_providers
+                 SET expired = 1,
+                     notes = CONCAT(notes, ' [Superseded by application ', ?, ']')
+                 WHERE id = ?"
+            )->execute([$app['app_ref'], $invRow['id']]);
+        }
+    }
+
     // 1) Contractor Lead = the application contact person (card permit, Mon–Fri)
     $leadCode = appNewSpUniqueCode();
     $pdo->prepare("
@@ -449,7 +474,7 @@ function appBridgeContractorToSp(int $appId, string $approverName): array {
            invited_by_resident_id, id_verified, approved_by, approved_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'approved','true',0,NULL,1,?,NOW())
     ")->execute([
-        '', 'GEMB Estate',
+        $resErfno, $resName,
         $app['applicant_name'], $app['company_name'] ?? '',
         $app['applicant_id_no'] ?? '', $app['applicant_phone'] ?? '',
         'contractor_lead', 'card', null,
@@ -483,7 +508,7 @@ function appBridgeContractorToSp(int $appId, string $approverName): array {
     foreach ($workers as $w) {
         $code = appNewSpUniqueCode();
         $insW->execute([
-            '', 'GEMB Estate',
+            $resErfno, $resName,
             trim(($w['first_name'] ?? '') . ' ' . ($w['surname'] ?? '')),
             $app['company_name'] ?? '',
             $w['id_number'] ?? '', '',
