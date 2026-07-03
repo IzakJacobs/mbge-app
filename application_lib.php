@@ -406,6 +406,76 @@ function appSendApprovalEmail(int $appId): void {
 }
 
 /**
+ * ESTATE AGENT INVITE — a resident asks an agent to complete their OWN
+ * registration rather than the resident filling it in on the agent's
+ * behalf. Creates a 'draft' applications row (no items/docs/acks yet —
+ * those only exist once the agent actually submits) carrying:
+ *   - erf_no        = the inviting resident's erf (estate_agent never
+ *                      shows/needs this field itself, so it's free to
+ *                      reuse as "invited by")
+ *   - applicant_name/applicant_email = the AGENT's details, pre-filled
+ *   - type_data      = resident name, for the banner shown to the agent
+ *   - resume_token   = the same token application_form.php already
+ *                      understands via ?resume=, so the agent lands on
+ *                      the identical public form the resident would have
+ *                      used, with their own details already filled in.
+ * Never throws on the mail side — invite creation must not be lost if
+ * the e-mail bounces; appSendEstateAgentInviteEmail() logs and swallows.
+ */
+function appCreateEstateAgentInvite(string $residentErf, string $residentName, string $agentName, string $agentEmail, string $agencyName = ''): array {
+    $pdo   = db();
+    $ref   = appNewRef();
+    $token = appSecureToken();
+    $typeDataJson = json_encode(
+        ['invited_by_name' => $residentName, 'invited_by_erf' => $residentErf],
+        JSON_UNESCAPED_UNICODE
+    );
+
+    $pdo->prepare(
+        "INSERT INTO applications
+           (app_ref, app_type, status, erf_no, applicant_name, applicant_email, applicant_phone,
+            company_name, type_data, resume_token, created_at)
+         VALUES (?, 'estate_agent', 'draft', ?, ?, ?, '', ?, ?, ?, NOW())"
+    )->execute([
+        $ref, $residentErf, $agentName, $agentEmail,
+        ($agencyName !== '' ? $agencyName : null), $typeDataJson, $token,
+    ]);
+    $appId = (int)$pdo->lastInsertId();
+
+    appLog($appId, null, 'draft', 'resident', null, 'estate_agent invite created for ' . $agentEmail);
+    appSendEstateAgentInviteEmail($agentName, $agentEmail, $residentName, $residentErf, $token, $ref);
+
+    return ['id' => $appId, 'app_ref' => $ref];
+}
+
+/**
+ * E-mails the invited agent the link to complete their own registration.
+ * Full URL, never a shortener, so the token arrives unmodified — same
+ * rule as every other mailer hook in this file.
+ */
+function appSendEstateAgentInviteEmail(string $agentName, string $agentEmail, string $residentName, string $residentErf, string $token, string $ref): void {
+    try {
+        $esc  = fn($s) => htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
+        $link = SITE_URL . '/application_form.php?resume=' . $token;
+
+        $html = '<p>Dear ' . $esc($agentName) . ',</p>'
+              . '<p>' . $esc($residentName) . ' (Erf ' . $esc($residentErf) . ') has asked you to register as an '
+              . 'Estate Agent with Mossel Bay Golf Estate, per the Estate\'s Requirements and Rules for Estate '
+              . 'Agents (2023).</p>'
+              . '<p>Please complete your registration using the secure link below. You will need to upload your '
+              . 'Fidelity Fund Certificate (yours and your Principal/Firm\'s), a Letter of Employment from your '
+              . 'Principal, and proof of payment of the R150.00 access card fee and R100.00 administration fee.</p>'
+              . '<p><a href="' . $esc($link) . '">' . $esc($link) . '</a></p>'
+              . '<p>Reference: <strong>' . $esc($ref) . '</strong></p>'
+              . '<p>Kind regards,<br>Mossel Bay Golf Estate HOA</p>';
+
+        smtpSend($agentEmail, 'Estate Agent registration invitation — ' . $ref, $html);
+    } catch (\Throwable $e) {
+        error_log('appSendEstateAgentInviteEmail failed for ' . $agentEmail . ': ' . $e->getMessage());
+    }
+}
+
+/**
  * Notify the resident once their visitor pet request (pets table, pet_type='visitor')
  * has been approved. This is a lightweight flow outside the applications engine,
  * so it isn't covered by appSetStatus()/appSendApprovalEmail() and needs its own hook.

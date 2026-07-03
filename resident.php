@@ -404,6 +404,9 @@ if ($action === 'menu') {
         <a href="request_new.php" class="menu-btn">
           <span class="icon">📝</span>New Request
         </a>
+        <a href="agent_invite.php" class="menu-btn">
+          <span class="icon">🏢</span>Invite Agent
+        </a>
         <a href="document_archive.php" class="menu-btn">
           <span class="icon">📄</span>Estate Documents
         </a>

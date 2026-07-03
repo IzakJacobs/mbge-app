@@ -19,7 +19,10 @@ if (!empty($_GET['resume'])) {
     $tok = appClean((string)$_GET['resume'], 64);
     if (preg_match('/^[a-f0-9]{64}$/', $tok)) {
         $stmt = db()->prepare(
-            "SELECT id, app_type, status, return_reason FROM applications
+            "SELECT id, app_ref, app_type, status, return_reason, erf_no,
+                    applicant_name, applicant_email, applicant_phone, applicant_id_no,
+                    company_name, type_data
+             FROM applications
              WHERE resume_token=? AND status IN ('draft','returned') LIMIT 1"
         );
         $stmt->execute([$tok]);
@@ -56,10 +59,29 @@ $officeMode = !empty($_SESSION['security_id']);
 $prefill = [
     'applicant_name'  => $invite['service_name'] ?? '',
     'applicant_id_no' => $invite['id_number'] ?? '',
+    'applicant_email' => '',
+    'applicant_phone' => '',
     'company_name'    => $invite['company_name'] ?? '',
     'erf_no'          => '',
     'owner_name'      => '',
 ];
+
+// ── Resume prefill: covers both a resident's estate-agent invite
+//    (status='draft', applicant_* already holds the AGENT's details)
+//    and a returned-for-correction resume (status='returned', applicant_*
+//    holds what was previously submitted). Same mechanism, same fields.
+$resumeInvitedBy = null;
+if ($resumeApp) {
+    $prefill['applicant_name']  = $resumeApp['applicant_name']  ?? $prefill['applicant_name'];
+    $prefill['applicant_id_no'] = $resumeApp['applicant_id_no'] ?? $prefill['applicant_id_no'];
+    $prefill['applicant_email'] = $resumeApp['applicant_email'] ?? '';
+    $prefill['applicant_phone'] = $resumeApp['applicant_phone'] ?? '';
+    $prefill['company_name']    = $resumeApp['company_name']    ?? $prefill['company_name'];
+    if ($resumeApp['status'] === 'draft' && $resumeApp['type_data']) {
+        $td = json_decode((string)$resumeApp['type_data'], true);
+        $resumeInvitedBy = $td['invited_by_name'] ?? null;
+    }
+}
 
 // ── Resident session prefill: pet/to_let applicants are the resident
 //    themselves; for tenant the resident is the co-signing OWNER while
@@ -207,29 +229,70 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $pdo = db();
             $pdo->beginTransaction();
             try {
-                $ref            = appNewRef();
-                $resumeToken    = appSecureToken();
                 $ownerSignToken = $needsOwner ? appSecureToken() : null;
-                $typeDataJson   = $typeData ? json_encode($typeData, JSON_UNESCAPED_UNICODE) : null;
 
-                $pdo->prepare(
-                    "INSERT INTO applications
-                     (app_ref, app_type, reg_type, erf_no, linked_app_id, status,
-                      applicant_name, applicant_id_no, applicant_email, applicant_phone, applicant_is_tenant,
-                      company_name, company_type, company_reg_no, company_owner,
-                      owner_name, owner_id_no, owner_email, owner_phone, owner_sign_token,
-                      type_data, resume_token, submitted_at, submit_ip)
-                     VALUES (?,?,?,?,?,'submitted',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW(),?)"
-                )->execute([
-                    $ref, $type, ($regType !== '' ? $regType : null), ($erfNo !== '' ? $erfNo : null), $linkedAppId,
-                    $applicantName, $applicantIdNo, $applicantEmail, $applicantPhone, $applicantIsTenant,
-                    $companyName, $companyType, $companyRegNo, $companyOwner,
-                    $ownerName, $ownerIdNo, $ownerEmail, $ownerPhone, $ownerSignToken,
-                    $typeDataJson, $resumeToken, $_SERVER['REMOTE_ADDR'] ?? null,
-                ]);
-                $appId = (int)$pdo->lastInsertId();
+                if ($resumeApp) {
+                    // ── Completing an invite (draft) or a returned-for-correction
+                    //    application: UPDATE the existing row in place — never a
+                    //    second row for the same resume_token. The token itself
+                    //    stays valid only while status is draft/returned (enforced
+                    //    by the lookup query above), so it's self-expiring on
+                    //    successful submission without needing to be cleared here.
+                    $appId = (int)$resumeApp['id'];
+                    $ref   = $resumeApp['app_ref'];
 
-                appLog($appId, null, 'submitted', 'applicant', null, 'form_submit_' . $type);
+                    // Preserve any "invited_by_*" markers already on the row and
+                    // merge in whatever type_fields the form itself collected
+                    // (e.g. agency_phone) rather than clobbering one with the other.
+                    $preservedTd = $resumeApp['type_data'] ? (json_decode((string)$resumeApp['type_data'], true) ?: []) : [];
+                    $mergedTd    = array_merge($preservedTd, $typeData);
+                    $typeDataJson = $mergedTd ? json_encode($mergedTd, JSON_UNESCAPED_UNICODE) : null;
+
+                    $pdo->prepare(
+                        "UPDATE applications SET
+                            reg_type=?, erf_no=COALESCE(NULLIF(?, ''), erf_no), linked_app_id=?,
+                            applicant_name=?, applicant_id_no=?, applicant_email=?, applicant_phone=?, applicant_is_tenant=?,
+                            company_name=?, company_type=?, company_reg_no=?, company_owner=?,
+                            owner_name=?, owner_id_no=?, owner_email=?, owner_phone=?, owner_sign_token=?,
+                            type_data=?, submitted_at=NOW(), submit_ip=?
+                         WHERE id=?"
+                    )->execute([
+                        ($regType !== '' ? $regType : null), $erfNo, $linkedAppId,
+                        $applicantName, $applicantIdNo, $applicantEmail, $applicantPhone, $applicantIsTenant,
+                        $companyName, $companyType, $companyRegNo, $companyOwner,
+                        $ownerName, $ownerIdNo, $ownerEmail, $ownerPhone, $ownerSignToken,
+                        $typeDataJson, $_SERVER['REMOTE_ADDR'] ?? null,
+                        $appId,
+                    ]);
+
+                    if (!appSetStatus($appId, 'submitted', 'applicant', null, 'completed via resume/invite link')) {
+                        throw new RuntimeException('This link has already been used or the application can no longer be edited. Please contact the office.');
+                    }
+                } else {
+                    // ── Brand-new application ──
+                    $ref          = appNewRef();
+                    $resumeToken  = appSecureToken();
+                    $typeDataJson = $typeData ? json_encode($typeData, JSON_UNESCAPED_UNICODE) : null;
+
+                    $pdo->prepare(
+                        "INSERT INTO applications
+                         (app_ref, app_type, reg_type, erf_no, linked_app_id, status,
+                          applicant_name, applicant_id_no, applicant_email, applicant_phone, applicant_is_tenant,
+                          company_name, company_type, company_reg_no, company_owner,
+                          owner_name, owner_id_no, owner_email, owner_phone, owner_sign_token,
+                          type_data, resume_token, submitted_at, submit_ip)
+                         VALUES (?,?,?,?,?,'submitted',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW(),?)"
+                    )->execute([
+                        $ref, $type, ($regType !== '' ? $regType : null), ($erfNo !== '' ? $erfNo : null), $linkedAppId,
+                        $applicantName, $applicantIdNo, $applicantEmail, $applicantPhone, $applicantIsTenant,
+                        $companyName, $companyType, $companyRegNo, $companyOwner,
+                        $ownerName, $ownerIdNo, $ownerEmail, $ownerPhone, $ownerSignToken,
+                        $typeDataJson, $resumeToken, $_SERVER['REMOTE_ADDR'] ?? null,
+                    ]);
+                    $appId = (int)$pdo->lastInsertId();
+
+                    appLog($appId, null, 'submitted', 'applicant', null, 'form_submit_' . $type);
+                }
 
                 // Items
                 $insItem = $pdo->prepare(
@@ -431,6 +494,13 @@ input:focus,select:focus { outline:2px solid var(--teal); border-color:var(--tea
   <span class="note">Please complete the form again with the corrections and resubmit.</span></div>
 <?php endif; ?>
 
+<?php if ($resumeApp && $resumeApp['status'] === 'draft' && $resumeInvitedBy): ?>
+  <div class="card" style="background:#eef6f6;border-left:4px solid var(--teal);">
+    <strong>🏠 You've been invited to register</strong>
+    <p class="note" style="margin:6px 0 0;"><?= h($resumeInvitedBy) ?> (Erf <?= h((string)$resumeApp['erf_no']) ?>) has asked you to complete your Estate Agent registration. Your name and e-mail are pre-filled below — please complete the rest and attach your documents.</p>
+  </div>
+<?php endif; ?>
+
 <?php if ($errors): ?>
   <div class="errbox"><strong>Please correct the following:</strong><ul>
   <?php foreach ($errors as $e): ?><li><?= h($e) ?></li><?php endforeach; ?>
@@ -473,8 +543,8 @@ input:focus,select:focus { outline:2px solid var(--teal); border-color:var(--tea
   <div class="row">
     <div><label>Full name *</label><input type="text" name="applicant_name" required maxlength="120" value="<?= h(oldv('applicant_name', $prefill['applicant_name'])) ?>"></div>
     <div><label>ID number</label><input type="text" name="applicant_id_no" maxlength="30" value="<?= h(oldv('applicant_id_no', $prefill['applicant_id_no'])) ?>"></div>
-    <div><label>E-mail address *</label><input type="email" name="applicant_email" required maxlength="150" value="<?= h(oldv('applicant_email')) ?>"></div>
-    <div><label>Contact number *</label><input type="text" name="applicant_phone" required maxlength="30" value="<?= h(oldv('applicant_phone')) ?>"></div>
+    <div><label>E-mail address *</label><input type="email" name="applicant_email" required maxlength="150" value="<?= h(oldv('applicant_email', $prefill['applicant_email'])) ?>"></div>
+    <div><label>Contact number *</label><input type="text" name="applicant_phone" required maxlength="30" value="<?= h(oldv('applicant_phone', $prefill['applicant_phone'])) ?>"></div>
     <?php if ($cfg['requires_erf']): ?>
       <div><label>Erf number *</label><input type="text" name="erf_no" required maxlength="10" style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase()" value="<?= h(oldv('erf_no', $prefill['erf_no'])) ?>"></div>
     <?php endif; ?>
