@@ -45,17 +45,23 @@ if (!empty($sp['expired'])) {
 }
 
 // ── QR code — encodes the raw reference code for the guard to scan
-//    (or type manually). Generated on the fly, not persisted to disk,
-//    so there's nothing for a cleanup cron to ever need to track.
-$qrDataUri = '';
+//    (or type manually). Written to /temp/ exactly like the visitor
+//    QR pass (generateQrForVisitor() in visitor.php) — that on-disk
+//    pattern is proven working in production; the earlier attempt
+//    at generating in-memory via output buffering was unreliable
+//    across phpqrcode builds and produced a corrupt/black image.
+$qrUrl = '';
 $qrLib = __DIR__ . '/phpqrcode/qrlib.php';
 if (file_exists($qrLib)) {
     require_once $qrLib;
-    ob_start();
-    QRcode::png($code, false, QR_ECLEVEL_M, 6, 2);
-    $qrData = ob_get_clean();
-    if ($qrData !== false && $qrData !== '') {
-        $qrDataUri = 'data:image/png;base64,' . base64_encode($qrData);
+    $tempDir  = __DIR__ . '/temp';
+    if (!is_dir($tempDir)) @mkdir($tempDir, 0755, true);
+    $qrFile   = $tempDir . '/sp_' . $code . '.png';
+    if (!file_exists($qrFile)) {
+        QRcode::png($code, $qrFile, QR_ECLEVEL_M, 6, 2);
+    }
+    if (file_exists($qrFile)) {
+        $qrUrl = '/temp/sp_' . $code . '.png';
     }
 }
 
@@ -94,8 +100,8 @@ header.gemb .sub { font-size:.8rem; opacity:.85; margin-top:2px; }
   <div class="card">
     <span class="badge" style="background:<?= $statusInfo['color'] ?>"><?= h($statusInfo['text']) ?></span>
 
-    <?php if ($qrDataUri): ?>
-    <div class="qr"><img src="<?= $qrDataUri ?>" alt="QR code"></div>
+    <?php if ($qrUrl): ?>
+    <div class="qr"><img src="<?= h($qrUrl) ?>" alt="QR code"></div>
     <?php endif; ?>
 
     <div class="code"><?= h($sp['unique_code']) ?></div>
