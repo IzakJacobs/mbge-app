@@ -14,6 +14,7 @@
 //   delivery requires security office approval + single-use slip
 // ============================================================
 require_once __DIR__ . '/layout.php';
+require_once __DIR__ . '/smtp_mail.php';
 if (session_status() === PHP_SESSION_NONE) session_start();
 requireResident();
 
@@ -100,6 +101,52 @@ $spCategories = [
     'delivery'        => ['icon' => '📦', 'label' => 'Delivery',
                           'permit' => 'slip', 'desc' => 'Once-off — security office approval required'],
 ];
+
+// ── Helper: build the correct invite link + message per category.
+//    Contractor Leads complete their OWN full registration (company
+//    details, documents, etc.) via the applications engine — the
+//    unique_code doubles as the ?invite= code application_form.php
+//    already understands. Every other category still visits the
+//    Security Office in person with their ID, unchanged.
+function spInviteContent(string $cat, string $code, string $spName, string $rname, string $resAddress, array $spCategories): array {
+    $catLabel = $spCategories[$cat]['label'] ?? $cat;
+
+    if ($cat === 'contractor_lead') {
+        $url = SITE_URL . '/application_form.php?type=contractor&invite=' . $code;
+        $wa  = "🏡 GEMB Contractor Registration\n\n"
+             . "Hi {$spName},\n\n"
+             . "You have been invited by {$rname}\n{$resAddress}\n\n"
+             . "Please complete your own registration — company details, ID "
+             . "and any required documents — using the link below:\n\n"
+             . "{$url}\n\n"
+             . "Reference code: {$code}\n\n"
+             . "GEMB HOA Reg. 1999/001249/08 | POPIA Act 4 of 2013";
+    } else {
+        $url = SITE_URL . '/sp_pass.php?code=' . $code;
+        $wa  = "🏡 GEMB Service Provider Invite\n\n"
+             . "Hi {$spName},\n\n"
+             . "You have been invited by {$rname}\n{$resAddress}\n\n"
+             . "Category: {$catLabel}\n\n"
+             . "Please visit the GEMB Security Office with your ID document to "
+             . "complete registration and collect your access permit.\n\n"
+             . "Tap the link below and show it to the Security Officer:\n{$url}\n\n"
+             . "Reference code: {$code}\n\n"
+             . "GEMB HOA Reg. 1999/001249/08 | POPIA Act 4 of 2013";
+    }
+    return ['url' => $url, 'wa_message' => $wa, 'cat_label' => $catLabel];
+}
+
+// ── Helper: e-mail the same invite text sent via WhatsApp — an
+//    addition alongside WhatsApp/SMS, never a replacement. Never
+//    throws; a failed e-mail must not block the WhatsApp/SMS send.
+function spSendInviteEmail(string $email, string $waMessage, string $catLabel, string $code): void {
+    try {
+        $html = '<p>' . nl2br(htmlspecialchars($waMessage, ENT_QUOTES, 'UTF-8')) . '</p>';
+        smtpSend($email, 'GEMB Invitation — ' . $catLabel . ' — ' . $code, $html);
+    } catch (\Throwable $e) {
+        error_log('spSendInviteEmail failed for ' . $email . ': ' . $e->getMessage());
+    }
+}
 
 // ════════════════════════════════════════════════════════
 // SELECT — list visitors + service providers
@@ -285,22 +332,16 @@ if ($action === 'select') {
           </div>
           <?php if ($spStatus === 'invited' && !empty($sp['sp_phone'])): ?>
           <?php
-            // Build resend WhatsApp link
-            $spPassUrl = SITE_URL . '/sp_pass.php?code=' . $sp['unique_code'];
-            $spWaMsg   = "🏡 GEMB Service Provider Invite\n\n"
-                       . "Hi {$sp['service_name']},\n\n"
-                       . "You have been invited by {$rname}\n"
-                       . "{$resAddress}\n\n"
-                       . "Category: {$cat['label']}\n\n"
-                       . "Please visit the GEMB Security Office with your ID to "
-                       . "complete registration and collect your access permit.\n\n"
-                       . "Your reference:\n"
-                       . SITE_URL . "/sp_pass.php?code={$sp['unique_code']}\n\n"
-                       . "GEMB HOA | POPIA Act 4 of 2013";
-            $spWaLink = buildWhatsAppLink($sp['sp_phone'], $spWaMsg);
+            // Resend — same category-aware content as the original invite
+            $spContent = spInviteContent($sp['category'], $sp['unique_code'], $sp['service_name'], $rname, $resAddress, $spCategories);
+            $spWaLink  = buildWhatsAppLink($sp['sp_phone'], $spContent['wa_message']);
           ?>
           <a href="<?= htmlspecialchars($spWaLink) ?>"
              class="btn btn-success btn-sm">📤 Resend</a>
+          <?php if (!empty($sp['sp_email'])): ?>
+          <a href="visitor.php?action=sp_resend_email&code=<?= urlencode($sp['unique_code']) ?>"
+             class="btn btn-secondary btn-sm">📧 Resend</a>
+          <?php endif; ?>
           <?php endif; ?>
         </div>
       </div>
@@ -327,7 +368,7 @@ if ($action === 'sp_invite') {
         db()->prepare("
             INSERT INTO service_providers
               (resident_erfno, resident_name, service_name, company_name,
-               sp_phone, id_number, category, permit_type,
+               sp_phone, sp_email, category, permit_type,
                start_date, end_date, notes, unique_code,
                status, approved, expired,
                invited_by_resident_id)
@@ -338,7 +379,7 @@ if ($action === 'sp_invite') {
             trim($_POST['sp_name']),
             trim($_POST['company_name'] ?? ''),
             trim($_POST['sp_phone']),
-            trim($_POST['id_number']    ?? ''),
+            filter_var(trim($_POST['sp_email'] ?? ''), FILTER_VALIDATE_EMAIL) ?: null,
             $cat,
             in_array($cat, ['domestic','resident_worker','contractor_lead'])
                 ? 'card' : 'slip',
@@ -349,32 +390,34 @@ if ($action === 'sp_invite') {
             $rid,
         ]);
 
-        // Build WhatsApp message
-        $catLabel  = $spCategories[$cat]['label'] ?? $cat;
-        $passUrl   = SITE_URL . '/sp_pass.php?code=' . $code;
-        $waMessage = "🏡 GEMB Service Provider Invite\n\n"
-                   . "Hi {$_POST['sp_name']},\n\n"
-                   . "You have been invited by {$rname}\n"
-                   . "{$resAddress}\n\n"
-                   . "Category: {$catLabel}\n\n"
-                   . "Please visit the GEMB Security Office with your ID "
-                   . "document to complete registration and collect your "
-                   . "access permit.\n\n"
-                   . "Tap the link below and show it to the Security Officer:\n"
-                   . "{$passUrl}\n\n"
-                   . "Reference code: {$code}\n\n"
-                   . "GEMB HOA Reg. 1999/001249/08 | POPIA Act 4 of 2013";
+        // Build invite content — category-aware (contractor_lead gets the
+        // full self-registration form link; everyone else gets sp_pass.php
+        // as before) — then send WhatsApp/SMS as usual, plus e-mail if an
+        // address was supplied.
+        $spName    = trim($_POST['sp_name']);
+        $spPhone   = trim($_POST['sp_phone']);
+        $spEmail   = filter_var(trim($_POST['sp_email'] ?? ''), FILTER_VALIDATE_EMAIL) ?: '';
+        $content   = spInviteContent($cat, $code, $spName, $rname, $resAddress, $spCategories);
+        $catLabel  = $content['cat_label'];
+        $passUrl   = $content['url'];
+        $waMessage = $content['wa_message'];
 
-        $waLink  = buildWhatsAppLink(trim($_POST['sp_phone']), $waMessage);
-        $smsLink = buildSmsLink(trim($_POST['sp_phone']),
-            "GEMB SP Invite: {$catLabel}. Visit Security Office with ID. "
-            . "Ref: {$passUrl}");
+        $waLink  = buildWhatsAppLink($spPhone, $waMessage);
+        $smsLink = buildSmsLink($spPhone,
+            "GEMB SP Invite: {$catLabel}. "
+            . ($cat === 'contractor_lead' ? 'Complete your registration' : 'Visit Security Office with ID')
+            . ". Ref: {$passUrl}");
+
+        if ($spEmail !== '') {
+            spSendInviteEmail($spEmail, $waMessage, $catLabel, $code);
+        }
 
         // Redirect to pass display with send buttons
         header('Location: visitor.php?action=sp_send'
                . '&code=' . urlencode($code)
                . '&wa='   . urlencode($waLink)
-               . '&sms='  . urlencode($smsLink));
+               . '&sms='  . urlencode($smsLink)
+               . ($spEmail !== '' ? '&emailed=1' : ''));
         exit;
     }
 
@@ -446,8 +489,12 @@ if ($action === 'sp_invite') {
                    placeholder="e.g. ABC Plumbing">
           </div>
           <div class="form-group">
-            <label>ID Number (optional)</label>
-            <input type="text" name="id_number">
+            <label>Email Address</label>
+            <input type="email" name="sp_email"
+                   placeholder="e.g. name@example.com">
+            <small style="color:#888;">
+              Used to send them their registration link.
+            </small>
           </div>
           <div class="form-group">
             <label>Description of Work</label>
@@ -508,9 +555,10 @@ if ($action === 'sp_invite') {
 // SP SEND — show WhatsApp/SMS send buttons
 // ════════════════════════════════════════════════════════
 if ($action === 'sp_send') {
-    $code    = $_GET['code'] ?? '';
-    $waLink  = $_GET['wa']   ?? '';
-    $smsLink = $_GET['sms']  ?? '';
+    $code    = $_GET['code']    ?? '';
+    $waLink  = $_GET['wa']      ?? '';
+    $smsLink = $_GET['sms']     ?? '';
+    $emailed = !empty($_GET['emailed']);
 
     // Fetch SP record
     $sp = db()->prepare(
@@ -524,6 +572,7 @@ if ($action === 'sp_send') {
     }
 
     $cat = $spCategories[$sp['category']] ?? $spCategories['domestic'];
+    $isContractorLead = $sp['category'] === 'contractor_lead';
 
     pageHeader('Send SP Invite', 'resident');
     renderHeader('📤 Send Invite', 'visitor.php?action=select');
@@ -573,9 +622,17 @@ if ($action === 'sp_send') {
           <strong>Next steps:</strong><br>
           1. Tap <strong>Send via WhatsApp</strong> below<br>
           2. Service provider receives the invite on their phone<br>
+          <?php if ($isContractorLead): ?>
+          3. They complete their own registration — company details, ID and
+             documents — using the link in the message
+          <?php else: ?>
           3. They must visit the <strong>Security Office</strong>
              with their ID<br>
           4. Security will verify and issue their access permit
+          <?php endif; ?>
+          <?php if ($emailed): ?>
+          <br><br>📧 A copy was also e-mailed to <?= htmlspecialchars($sp['sp_email'] ?? '') ?>.
+          <?php endif; ?>
         </div>
 
         <!-- Send buttons -->
@@ -603,6 +660,29 @@ if ($action === 'sp_send') {
     pageFooter();
     exit;
 } // end sp_send
+
+// ════════════════════════════════════════════════════════
+// SP RESEND EMAIL — resend an existing invite by e-mail only
+// ════════════════════════════════════════════════════════
+if ($action === 'sp_resend_email') {
+    $code = $_GET['code'] ?? '';
+
+    $sp = db()->prepare(
+        "SELECT * FROM service_providers
+         WHERE unique_code=? AND resident_erfno=? AND status='invited' LIMIT 1"
+    );
+    $sp->execute([$code, $rerf]);
+    $sp = $sp->fetch();
+
+    if ($sp && !empty($sp['sp_email'])) {
+        $content = spInviteContent($sp['category'], $sp['unique_code'], $sp['service_name'], $rname, $resAddress, $spCategories);
+        spSendInviteEmail($sp['sp_email'], $content['wa_message'], $content['cat_label'], $sp['unique_code']);
+        setFlash('success', 'Invite re-sent by e-mail to ' . $sp['sp_email'] . '.');
+    } else {
+        setFlash('error', 'Could not resend — invite not found or no e-mail on file.');
+    }
+    header('Location: visitor.php?action=select'); exit;
+}
 
 // ════════════════════════════════════════════════════════
 // ADD VISITOR
