@@ -44,12 +44,26 @@ if (!empty($sp['expired'])) {
     ][$sp['status']] ?? ['text' => ucfirst((string)$sp['status']), 'color' => '#6c757d'];
 }
 
-// ── QR code — encodes the raw reference code for the guard to scan
-//    (or type manually). Written to /temp/ exactly like the visitor
-//    QR pass (generateQrForVisitor() in visitor.php) — that on-disk
-//    pattern is proven working in production; the earlier attempt
-//    at generating in-memory via output buffering was unreliable
-//    across phpqrcode builds and produced a corrupt/black image.
+// ── QR code — encodes a full human-readable summary (not just the
+//    bare code) so a guard's scanner shows everything at a glance:
+//    Name / Resident / Erf / Valid dates / Hours / Category / Code.
+//    Written to /temp/, same proven pattern as generateQrForVisitor().
+$qrLines = [$sp['service_name']];
+$qrLines[] = 'Resident: ' . (string)($sp['resident_name'] ?? '');
+if (!empty($sp['resident_erfno'])) $qrLines[] = 'Erf: ' . $sp['resident_erfno'];
+if (!empty($sp['start_date']) && !empty($sp['end_date'])) {
+    $qrLines[] = 'Valid: ' . date('d M Y', strtotime($sp['start_date'])) . ' – ' . date('d M Y', strtotime($sp['end_date']));
+}
+$hoursBits = [];
+if (!empty($sp['access_days']))  $hoursBits[] = $sp['access_days'];
+if (!empty($sp['access_start']) && !empty($sp['access_end'])) {
+    $hoursBits[] = substr($sp['access_start'], 0, 5) . '–' . substr($sp['access_end'], 0, 5);
+}
+if ($hoursBits) $qrLines[] = 'Hours: ' . implode(' ', $hoursBits);
+$qrLines[] = $cat['label'];
+$qrLines[] = $sp['unique_code'];
+$qrText = implode("\n", $qrLines);
+
 $qrUrl = '';
 $qrLib = __DIR__ . '/phpqrcode/qrlib.php';
 if (file_exists($qrLib)) {
@@ -58,7 +72,7 @@ if (file_exists($qrLib)) {
     if (!is_dir($tempDir)) @mkdir($tempDir, 0755, true);
     $qrFile   = $tempDir . '/sp_' . $code . '.png';
     if (!file_exists($qrFile)) {
-        QRcode::png($code, $qrFile, QR_ECLEVEL_M, 6, 2);
+        QRcode::png($qrText, $qrFile, QR_ECLEVEL_M, 6, 2);
     }
     if (file_exists($qrFile)) {
         $qrUrl = '/temp/sp_' . $code . '.png';
