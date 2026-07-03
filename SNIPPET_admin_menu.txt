@@ -1,0 +1,44 @@
+// INSTRUCTION FILE — do not upload; paste the two blocks into admin.php
+// ============================================================
+// admin.php — Approvals of Resident Requests — menu button
+// (pet / tenant / to-let / estate agent approvals, per Board
+// delegation MOI Art. 20.5.3; contractors remain with the site
+// manager in the security portal)
+// ============================================================
+//
+// STEP 1 — In admin.php's MENU action, with the other count
+// queries BEFORE the page renders, paste:
+
+    // Resident requests awaiting admin approval:
+    // engine applications (to-let/tenant/pet/estate agent) + visitor pets
+    try {
+        $pendingApps = db()->query(
+            "SELECT
+               (SELECT COUNT(*) FROM applications
+                WHERE app_type IN ('to_let','tenant','pet','estate_agent')
+                  AND status IN ('pending_verification','induction_scheduled'))
+             + (SELECT COUNT(*) FROM pets
+                WHERE pet_type='visitor' AND status='pending')"
+        )->fetchColumn();
+    } catch (Exception $e) {
+        $pendingApps = 0;   // engine tables not installed yet — button still works
+    }
+
+// STEP 2 — REPLACE the existing "Tenant & Pet Approval" button in
+// the admin menu grid with this one (same position). The new page
+// covers everything the old one did — including visitor pets —
+// plus to-let, permanent pets, tenants and estate agents:
+
+        <a href="admin_approvals.php" class="menu-btn">
+          <span class="icon">📋</span>Approvals of Resident Requests
+          <?php if ($pendingApps > 0): ?>
+            <span class="badge badge-warning"><?= $pendingApps ?></span>
+          <?php endif; ?>
+        </a>
+
+// NOTE on session variables: admin_approvals.php expects
+// $_SESSION['admin_id'] and $_SESSION['admin_name'] to be set by
+// the admin login (mirroring security.php's security_id/name).
+// If admin.php uses different keys, change the two lines near the
+// top of admin_approvals.php marked with the ADMIN portal
+// guard comment.

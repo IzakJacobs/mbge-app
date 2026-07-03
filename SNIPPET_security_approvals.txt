@@ -1,0 +1,97 @@
+// INSTRUCTION FILE — do not upload; paste the marked blocks into security.php
+// ============================================================
+// PASTE-IN SNIPPET for security.php — SP APPROVALS changes
+// Purpose: Contractor Leads can ONLY be approved through the
+// Application Verification engine (checklist + documents +
+// induction). The plain Approve button is removed for them and
+// replaced with "Capture Application"; the POST handler enforces
+// the same rule server-side so it cannot be bypassed.
+// ============================================================
+//
+// ─────────────────────────────────────────────────────────────
+// CHANGE 1 — POST handler guard (server-side enforcement)
+// In the approvals action, find this block:
+//
+//     if ($act === 'approve') {
+//         db()->prepare(
+//             "UPDATE service_providers SET approved='true', ...
+//
+// and INSERT the guard below at the very top of the
+// `if ($act === 'approve') {` block, BEFORE the UPDATE:
+// ─────────────────────────────────────────────────────────────
+
+        if ($act === 'approve') {
+            // ── Engine enforcement: Contractor Leads must come through
+            //    the Application Verification process. Records created BY
+            //    the engine carry '[gemB APP-' in notes and are born
+            //    approved, so this only blocks raw invite placeholders.
+            $guard = db()->prepare("SELECT category, notes, unique_code FROM service_providers WHERE id=? LIMIT 1");
+            $guard->execute([$id]);
+            $guardRow = $guard->fetch();
+            if ($guardRow
+                && $guardRow['category'] === 'contractor_lead'
+                && strpos($guardRow['notes'] ?? '', '[gemB APP-') === false) {
+                setFlash('error',
+                    'Contractor Leads cannot be approved directly. Use "Capture Application" to complete the '
+                    . 'contractor application (worker documents, police clearances, payment, induction) — approval '
+                    . 'happens in Application Verification once every checklist item passes.');
+                header('Location: security.php?action=approvals'); exit;
+            }
+            // ... existing UPDATE + generateSpQr() + setFlash continue here unchanged
+        }
+
+// ─────────────────────────────────────────────────────────────
+// CHANGE 2 — Button swap in the approvals card rendering
+// Find this block in the approvals foreach:
+//
+//     <?php if (!$isApproved && !$isExpired): ?>
+//     <form method="POST" style="display:inline">
+//       ... name="sp_action" value="approve" ...
+//       <button class="btn btn-success btn-sm">Approve</button>
+//     </form>
+//     <?php endif; ?>
+//
+// and REPLACE it with:
+// ─────────────────────────────────────────────────────────────
+
+            <?php if (!$isApproved && !$isExpired): ?>
+              <?php if (($sp['category'] ?? '') === 'contractor_lead'
+                        && strpos($sp['notes'] ?? '', '[gemB APP-') === false): ?>
+              <a href="application_form.php?type=contractor&invite=<?= urlencode($sp['unique_code'] ?? '') ?>"
+                 class="btn btn-primary btn-sm">📋 Capture Application</a>
+              <?php else: ?>
+              <form method="POST" style="display:inline">
+                <?= csrfField() ?>
+                <input type="hidden" name="sp_id" value="<?= $sp['id'] ?>">
+                <input type="hidden" name="sp_action" value="approve">
+                <button class="btn btn-success btn-sm">Approve</button>
+              </form>
+              <?php endif; ?>
+            <?php endif; ?>
+
+// ─────────────────────────────────────────────────────────────
+// NOTES
+// • Domestic, resident worker, delivery and contractor_worker
+//   records keep the existing one-click Approve — their light
+//   flow is unchanged.
+// • After "Induction Done → Approve" in Application Verification,
+//   the engine expires the invite placeholder ('[Superseded by
+//   application ...]') and creates the approved lead + workers,
+//   which appear under the Approved filter with Print Card /
+//   Print Slip buttons as normal.
+// • Revoke continues to work on engine-created records, including
+//   the cascade that revokes a lead's workers.
+//
+// BONUS FIX (recommended, unrelated bug visible in testing):
+// "Received: 01 Jan 1970" on invite cards means created_at is
+// being stored as zero. Run once in phpMyAdmin:
+//
+//   ALTER TABLE service_providers
+//     MODIFY created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP;
+//   UPDATE service_providers
+//     SET created_at = NOW()
+//     WHERE created_at IS NULL OR created_at = '0000-00-00 00:00:00';
+//
+// and check that the sp_invite INSERT in visitor.php either
+// includes NOW() for created_at or omits the column entirely so
+// the new default applies.

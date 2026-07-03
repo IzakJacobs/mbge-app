@@ -1,84 +1,44 @@
 # ============================================================
-# MBGE Access Control — .gitignore
-# Prevents sensitive and generated files from being committed
+# gemB / MBGE — .gitignore (merged 2026-07-03)
 # ============================================================
-
-# ── Sensitive configuration ───────────────────────────────
+# Sensitive configuration
 config.php
+secret_pin.php
 .user.ini
 .env
 .env.*
 
-# ── Log files ─────────────────────────────────────────────
-logs/
-*.log
-error_log
-
-# ── Generated QR image files ──────────────────────────────
-temp/
-
-# ── ESP32 firmware (contains WiFi credentials + token) ────
+# ESP32 firmware (WiFi credentials + gate token)
 esp32/gate_trigger/gate_trigger.ino
 esp32/gate_entry/gate_entry.ino
 
-# ── Sensitive token files ─────────────────────────────────
-*.txt
-cloudfare-token.txt
-mbge-token.txt
-Namecheap Token.txt
+# Separate repository (gemb-comms)
+/comms/
 
-# ── One-time utility scripts (never re-deploy these) ──────
-setpwd.php
-gen_hashes.php
-test.php
+# POPIA-sensitive content
+private/
+app_uploads/
+uploads/
 
-# ── Development / staging files ───────────────────────────
-bf_functions.php
-bf_login_pattern.php
-config_additions.php
-layout_additions.php
-device_token_patch_admin_resident.md
-
-# ── Database migration scripts (run once, then archive) ───
-# Keep sql_migration.sql in repo for reference but note it
-# should not be re-run on a live database
-# sql_migration.sql   ← kept intentionally
-
-# ── OS and editor noise ───────────────────────────────────
-.DS_Store
-Thumbs.db
-*.swp
-*.swo
-*.orig
-*.bak
-.idea/
-.vscode/
-node_modules/
-
-# ── Composer / npm artifacts ──────────────────────────────
-vendor/
-composer.lock
-package-lock.json
-
-# ── Pi node — credentials and runtime data ────────────────
-pi/config.php
-pi/pi_node_config.php
-pi/data/
-
-# ── Resident data exports (POPIA — never commit) ──────────
-*.csv
-
-# ── cPanel-generated server config (server-specific paths) ─
-php.ini
-
-# ── Uploaded documents (resident files — POPIA) ────────────
-uploads/documents/
-
-# ── Local backups and cPanel download archives ────────────
+# Backups / archives (may contain config.php inside)
 *.zip
-Backup*/
-mnt/
-layout_addition_requireVoteSession.php
-secret_pin.php
-comms/config.php
-comms/smtp_mail.php
+*.tar.gz
+*.sql.gz
+
+# Logs, sessions, generated files
+logs/
+*.log
+error_log
+sessions/
+temp/
+
+# cPanel / hosting artifacts
+.well-known/
+.htpasswds/
+.cpanel*
+.ftpquota
+
+# Editor / OS noise
+*.bak
+*~
+.DS_Store
