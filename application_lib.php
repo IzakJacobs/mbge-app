@@ -5,6 +5,7 @@
 // Conventions: PDO via db(), layout.php helpers, POPIA audit trail.
 // ============================================================
 require_once __DIR__ . '/layout.php';
+require_once __DIR__ . '/smtp_mail.php';
 
 // Uploaded application documents live OUTSIDE the webroot.
 if (!defined('APP_UPLOAD_DIR'))       define('APP_UPLOAD_DIR', __DIR__ . '/../private/app_uploads');
@@ -352,7 +353,91 @@ function appSetStatus(int $appId, string $newStatus, string $actorType, ?int $ac
 
     db()->prepare("UPDATE applications SET status = ? WHERE id = ?")->execute([$newStatus, $appId]);
     appLog($appId, $current, $newStatus, $actorType, $actorId, $note);
+
+    if ($newStatus === 'approved') {
+        appSendApprovalEmail($appId);
+    }
+
     return true;
+}
+
+/**
+ * Notify the applicant by e-mail once their application has been approved.
+ * Covers every APP_TYPES entry (contractor, estate_agent, to_let, tenant, pet)
+ * since it's called from the single appSetStatus() choke point above.
+ * Never throws — a mail failure must not block or unwind an approval.
+ */
+function appSendApprovalEmail(int $appId): void {
+    try {
+        $stmt = db()->prepare("SELECT * FROM applications WHERE id = ? LIMIT 1");
+        $stmt->execute([$appId]);
+        $app = $stmt->fetch();
+        if (!$app || empty($app['applicant_email'])) return;
+
+        $cfg   = APP_TYPES[$app['app_type']] ?? null;
+        $label = $cfg['label'] ?? ucfirst(str_replace('_', ' ', $app['app_type']));
+
+        $esc = fn($s) => htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
+
+        $intro = 'Your ' . $label . ' application has been <strong>approved</strong>.';
+        $extra = '';
+        if (in_array($app['app_type'], ['contractor', 'estate_agent'], true)) {
+            $extra = '<p>Your access card / QR code is now active. If you still need to attend an induction '
+                    . 'session, our office will be in touch to schedule this.</p>';
+        } elseif ($app['app_type'] === 'to_let') {
+            $extra = '<p>Your property is now registered to let. Please proceed with the Tenant Registration '
+                    . '&amp; Undertaking for any tenant once a lease is in place.</p>';
+        } elseif ($app['app_type'] === 'tenant') {
+            $extra = '<p>The tenant has been added to the estate\'s access records for erf ' . $esc($app['erf_no'] ?? '') . '.</p>';
+        } elseif ($app['app_type'] === 'pet') {
+            $extra = '<p>The pet has been added to the estate\'s pet register for erf ' . $esc($app['erf_no'] ?? '') . '.</p>';
+        }
+
+        $html = '<p>Dear ' . $esc($app['applicant_name']) . ',</p>'
+              . '<p>' . $intro . '</p>'
+              . $extra
+              . '<p>Reference: <strong>' . $esc($app['app_ref']) . '</strong></p>'
+              . '<p>Kind regards,<br>Mossel Bay Golf Estate HOA</p>';
+
+        smtpSend($app['applicant_email'], $label . ' approved — ' . $app['app_ref'], $html);
+    } catch (\Throwable $e) {
+        error_log('appSendApprovalEmail failed for application #' . $appId . ': ' . $e->getMessage());
+    }
+}
+
+/**
+ * Notify the resident once their visitor pet request (pets table, pet_type='visitor')
+ * has been approved. This is a lightweight flow outside the applications engine,
+ * so it isn't covered by appSetStatus()/appSendApprovalEmail() and needs its own hook.
+ * Never throws — a mail failure must not block the approval.
+ */
+function appSendVisitorPetApprovalEmail(int $vpId): void {
+    try {
+        $stmt = db()->prepare("SELECT * FROM pets WHERE id = ? AND pet_type = 'visitor' LIMIT 1");
+        $stmt->execute([$vpId]);
+        $pet = $stmt->fetch();
+        if (!$pet || empty($pet['resident_erfno'])) return;
+
+        $stmt = db()->prepare(
+            "SELECT email FROM residents WHERE UPPER(resident_erfno) = UPPER(?) AND is_primary = 1 LIMIT 1"
+        );
+        $stmt->execute([$pet['resident_erfno']]);
+        $email = (string)($stmt->fetchColumn() ?: '');
+        if ($email === '') return;
+
+        $esc = fn($s) => htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
+
+        $html = '<p>Dear ' . $esc($pet['resident_name'] ?? 'Resident') . ',</p>'
+              . '<p>Your visitor pet request for <strong>' . $esc($pet['pet_name'] ?? '') . '</strong> '
+              . '(' . $esc($pet['visit_start'] ?? '') . ' to ' . $esc($pet['visit_end'] ?? '') . ') '
+              . 'has been <strong>approved</strong>.</p>'
+              . '<p>Erf: <strong>' . $esc($pet['resident_erfno']) . '</strong></p>'
+              . '<p>Kind regards,<br>Mossel Bay Golf Estate HOA</p>';
+
+        smtpSend($email, 'Visitor pet approved — erf ' . $pet['resident_erfno'], $html);
+    } catch (\Throwable $e) {
+        error_log('appSendVisitorPetApprovalEmail failed for pet #' . $vpId . ': ' . $e->getMessage());
+    }
 }
 
 function appGenerateChecklist(int $appId, string $appType): void {

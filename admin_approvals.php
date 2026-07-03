@@ -41,6 +41,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 "UPDATE pets SET status='approved', approved_by=?, approved_at=NOW()
                  WHERE id=? AND pet_type='visitor' AND status='pending'"
             )->execute([$managerName, $vpId]);
+            appSendVisitorPetApprovalEmail($vpId);
             setFlash('success', 'Visitor pet approved.');
         } else {
             $reason = appClean($_POST['vp_reason'] ?? '', 500);
