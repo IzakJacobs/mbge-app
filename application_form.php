@@ -56,6 +56,17 @@ if ($type === 'contractor' && $inviteCode !== '') {
 //    security office with the contractor present. Detected from the
 //    active security session (same session as security.php).
 $officeMode = !empty($_SESSION['security_id']);
+
+// ── Estate agents complete their OWN registration via an invite link
+//    only. The sections that follow (Company Details, Agency Vehicle,
+//    Payment, Supporting Documents, Undertakings) are the AGENT's
+//    information to provide — a resident should never see or fill
+//    them in. Direct, tokenless access is redirected to the resident's
+//    minimal "invite an agent" page instead.
+if ($type === 'estate_agent' && !$resumeApp && !$officeMode) {
+    header('Location: agent_invite.php'); exit;
+}
+
 $prefill = [
     'applicant_name'  => $invite['service_name'] ?? '',
     'applicant_id_no' => $invite['id_number'] ?? '',
