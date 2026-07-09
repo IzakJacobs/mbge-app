@@ -3,8 +3,10 @@
 // GEMB Access Control — resident.php
 // Handles login (with device token + OTP + PIN reset) and
 // all resident portal actions: menu, visitors, vehicles,
-// helpdesk, reset password
+// helpdesk
 // Note: Comms/Notices removed — Phase 2 bolt-on
+// Note: In-portal "Change PIN" action removed — PIN reset is
+//       now handled exclusively via "Forgot PIN?" on login.
 // ============================================================
 require_once __DIR__ . '/layout.php';
 if (session_status() === PHP_SESSION_NONE) session_start();
@@ -407,15 +409,6 @@ if ($action === 'menu') {
         <a href="document_archive.php" class="menu-btn">
           <span class="icon">📄</span>Estate Documents
         </a>
-        <a href="resident.php?action=helpdesk" class="menu-btn">
-          <span class="icon">🔧</span>Report Fault
-        </a>
-        <a href="resident.php?action=reset" class="menu-btn">
-          <span class="icon">🔑</span>Change PIN
-        </a>
-        <a href="logout.php" class="menu-btn">
-          <span class="icon">🚪</span>Logout
-        </a>
       </div>
     </div>
     <?php pageFooter(); exit; ?>
@@ -594,50 +587,6 @@ if ($action === 'helpdesk') {
         <?php endforeach; ?>
       </div>
       <?php endif; ?>
-    </div>
-    <?php pageFooter(); exit; ?>
-<?php } // end action
-
-// ── CHANGE PIN (when already logged in) ───────────────────
-if ($action === 'reset') {
-    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-        verifyCsrfToken();
-        $new = trim($_POST['new_password'] ?? '');
-        $con = trim($_POST['confirm_password'] ?? '');
-        if (!preg_match('/^\d{4}$/', $new)) {
-            setFlash('error', 'PIN must be exactly 4 digits.');
-        } elseif ($new !== $con) {
-            setFlash('error', 'PINs do not match.');
-        } else {
-            db()->prepare("UPDATE residents SET pin_hash=? WHERE id=?")
-                ->execute([password_hash($new, PASSWORD_BCRYPT), $rid]);
-            setFlash('success', 'PIN updated successfully.');
-            header('Location: resident.php?action=menu'); exit;
-        }
-    }
-    pageHeader('Change PIN', 'resident');
-    renderHeader('🔑 Change PIN', 'resident.php?action=menu');
-    ?>
-    <div class="container" style="max-width:420px;">
-      <div class="card">
-        <?= getFlash() ?>
-        <form method="POST">
-          <?= csrfField() ?>
-          <div class="form-group">
-            <label>New 4-digit PIN</label>
-            <input type="password" name="new_password" required
-                   style="font-size:1.6rem;letter-spacing:0.4em;text-align:center;"
-                   maxlength="4" pattern="\d{4}" inputmode="numeric" placeholder="••••">
-          </div>
-          <div class="form-group">
-            <label>Confirm PIN</label>
-            <input type="password" name="confirm_password" required
-                   style="font-size:1.6rem;letter-spacing:0.4em;text-align:center;"
-                   maxlength="4" pattern="\d{4}" inputmode="numeric" placeholder="••••">
-          </div>
-          <button type="submit" class="btn btn-primary btn-block">Update PIN</button>
-        </form>
-      </div>
     </div>
     <?php pageFooter(); exit; ?>
 <?php } // end action
