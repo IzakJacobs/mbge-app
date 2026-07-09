@@ -2,7 +2,7 @@
 // ============================================================
 // GEMB Access Control — resident.php
 // Handles login (with device token + OTP + PIN reset) and
-// all resident portal actions: menu, visitors, vehicles,
+// all resident portal actions: menu, visitors,
 // helpdesk
 // Note: Comms/Notices removed — Phase 2 bolt-on
 // Note: In-portal "Change PIN" action removed — PIN reset is
@@ -400,9 +400,6 @@ if ($action === 'menu') {
         <a href="visitor.php?action=select" class="menu-btn">
           <span class="icon">👤</span>My Visitors
         </a>
-        <a href="resident.php?action=vehicles" class="menu-btn">
-          <span class="icon">🚗</span>My Vehicles
-        </a>
         <a href="request_new.php" class="menu-btn">
           <span class="icon">📝</span>New Request
         </a>
@@ -414,82 +411,6 @@ if ($action === 'menu') {
     <?php pageFooter(); exit; ?>
 <?php } // end action
 
-
-// ── VEHICLES ──────────────────────────────────────────────
-if ($action === 'vehicles') {
-    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-        verifyCsrfToken();
-        $act = $_POST['vact'] ?? '';
-        if ($act === 'add') {
-            $plate = strtoupper(trim($_POST['plate'] ?? ''));
-            $desc  = trim($_POST['description'] ?? '');
-            if ($plate) {
-                db()->prepare(
-                    "INSERT INTO resident_vehicles (resident_id,plate,description) VALUES (?,?,?)"
-                )->execute([$rid, $plate, $desc]);
-                setFlash('success', 'Vehicle added.');
-            }
-        } elseif ($act === 'delete') {
-            db()->prepare(
-                "DELETE FROM resident_vehicles WHERE id=? AND resident_id=?"
-            )->execute([(int)$_POST['vid'], $rid]);
-            setFlash('success', 'Vehicle removed.');
-        }
-        header('Location: resident.php?action=vehicles'); exit;
-    }
-    $stmt = db()->prepare(
-        "SELECT * FROM resident_vehicles WHERE resident_id=? ORDER BY created_at DESC"
-    );
-    $stmt->execute([$rid]);
-    $vehicles = $stmt->fetchAll();
-
-    pageHeader('My Vehicles', 'resident');
-    renderHeader('🚗 My Vehicles', 'resident.php?action=menu');
-    ?>
-    <div class="container">
-      <?= getFlash() ?>
-      <div class="card">
-        <div class="card-title">Registered Vehicles (LPR Gate Access)</div>
-        <?php if (empty($vehicles)): ?>
-          <p style="color:#666;font-size:.9rem;">No vehicles registered yet.</p>
-        <?php else: foreach ($vehicles as $v): ?>
-        <div style="display:flex;justify-content:space-between;align-items:center;
-                    padding:10px 0;border-bottom:1px solid #eee;">
-          <div>
-            <strong><?= htmlspecialchars($v['plate']) ?></strong>
-            <?php if ($v['description']): ?>
-              <span style="color:#666;font-size:.85rem;"> — <?= htmlspecialchars($v['description']) ?></span>
-            <?php endif; ?>
-          </div>
-          <form method="POST" onsubmit="return confirm('Remove this vehicle?')">
-            <?= csrfField() ?>
-            <input type="hidden" name="vact" value="delete">
-            <input type="hidden" name="vid"  value="<?= $v['id'] ?>">
-            <button class="btn btn-danger btn-sm">Remove</button>
-          </form>
-        </div>
-        <?php endforeach; endif; ?>
-      </div>
-      <div class="card">
-        <div class="card-title">Add Vehicle</div>
-        <form method="POST">
-          <?= csrfField() ?>
-          <input type="hidden" name="vact" value="add">
-          <div class="form-group">
-            <label>Plate Number *</label>
-            <input type="text" name="plate" required
-                   style="text-transform:uppercase;" placeholder="e.g. CBS 10009">
-          </div>
-          <div class="form-group">
-            <label>Description (optional)</label>
-            <input type="text" name="description" placeholder="e.g. Silver Toyota Hilux">
-          </div>
-          <button type="submit" class="btn btn-primary">Add Vehicle</button>
-        </form>
-      </div>
-    </div>
-    <?php pageFooter(); exit; ?>
-<?php } // end action
 
 // ── HELPDESK ──────────────────────────────────────────────
 if ($action === 'helpdesk') {

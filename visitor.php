@@ -90,6 +90,28 @@ function generateQrForVisitor(int $visitorId, string $code): void
     }
 }
 
+// ── Helper: save/update this visitor in the resident's own
+//    reusable address book (resident_saved_visitors). Upserts on
+//    (resident_id, visitor_name) so re-inviting the same person
+//    just refreshes their phone/idnum/plate and last_used_at.
+function saveVisitorForReuse(int $rid, string $rerf, string $rname,
+                              string $name, string $phone,
+                              string $idnum, string $plate): void {
+    $name = trim($name);
+    if ($name === '') return;
+    db()->prepare("
+        INSERT INTO resident_saved_visitors
+          (resident_id, resident_erfno, resident_name,
+           visitor_name, visitor_phone, idnum, plate, last_used_at)
+        VALUES (?,?,?,?,?,?,?, NOW())
+        ON DUPLICATE KEY UPDATE
+          visitor_phone = VALUES(visitor_phone),
+          idnum         = VALUES(idnum),
+          plate         = VALUES(plate),
+          last_used_at  = NOW()
+    ")->execute([$rid, $rerf, $rname, $name, $phone, $idnum, $plate]);
+}
+
 // ── SP category labels ────────────────────────────────────
 $spCategories = [
     'domestic'        => ['icon' => '🏠', 'label' => 'Domestic Worker',
@@ -729,6 +751,20 @@ if ($action === 'add') {
 
         generateQrForVisitor($newId, $code);
 
+        // Save/update this visitor in the resident's reusable address
+        // book so they can pick them from a dropdown next time.
+        // Deliveries are excluded — couriers/companies aren't really
+        // "repeat personal visitors" the same way.
+        if (!$isDelivery) {
+            saveVisitorForReuse(
+                $rid, $rerf, $rname,
+                trim($_POST['visitor_name']),
+                trim($_POST['visitor_phone'] ?? ''),
+                trim($_POST['idnum']         ?? ''),
+                strtoupper(trim($_POST['plate'] ?? ''))
+            );
+        }
+
         // Build pass URL + WhatsApp message
         $passUrl  = SITE_URL . '/visitor_qr.php?code=' . $code;
         $fmtFrom  = date('d M Y', strtotime($_POST['visit_date']));
@@ -761,6 +797,21 @@ if ($action === 'add') {
         exit;
     }
 
+    // Fetch this resident's saved visitors (for the reuse dropdown).
+    // Excluded for deliveries — see note above.
+    $savedVisitors = [];
+    if (!$isDelivery) {
+        $sv = db()->prepare(
+            "SELECT visitor_name, visitor_phone, idnum, plate
+             FROM resident_saved_visitors
+             WHERE resident_id=?
+             ORDER BY last_used_at DESC
+             LIMIT 50"
+        );
+        $sv->execute([$rid]);
+        $savedVisitors = $sv->fetchAll();
+    }
+
     pageHeader($isDelivery ? 'Delivery Pass' : 'Invite Visitor', 'resident');
     renderHeader(
         $isDelivery ? '📦 Create Delivery Pass' : '➕ Invite Visitor',
@@ -770,6 +821,21 @@ if ($action === 'add') {
     <div class="container" style="max-width:520px;">
       <div class="card">
         <?= getFlash() ?>
+        <?php if (!$isDelivery && !empty($savedVisitors)): ?>
+        <div class="form-group">
+          <label>Select a Previous Visitor</label>
+          <input type="text" id="savedVisitorFilter" autocomplete="off"
+                 placeholder="Type a name to search…"
+                 style="margin-bottom:8px;">
+          <select id="savedVisitorSelect"
+                  style="font-size:1.05rem;padding:12px 14px;width:100%;">
+            <option value="">— New Visitor —</option>
+          </select>
+          <small style="color:#888;">
+            Pick someone you've invited before to fill in their details.
+          </small>
+        </div>
+        <?php endif; ?>
         <form method="POST"
               action="visitor.php?action=add<?= $isDelivery ? '&is_delivery=1' : '' ?>">
           <?= csrfField() ?>
@@ -841,6 +907,56 @@ if ($action === 'add') {
         </div>
       </div>
     </div>
+    <?php if (!$isDelivery && !empty($savedVisitors)): ?>
+    <script>
+    // Plain client-side dropdown + search over a small pre-loaded list.
+    // Deliberately no fetch()/AJAX here so this still works on old
+    // devices (e.g. iPhone 4 / iOS 7) that don't support fetch().
+    var savedVisitorsData = <?= json_encode(array_values($savedVisitors)) ?>;
+
+    function renderSavedVisitorOptions(filterText) {
+        var sel = document.getElementById('savedVisitorSelect');
+        sel.innerHTML = '';
+        var optNew = document.createElement('option');
+        optNew.value = '';
+        optNew.text  = '— New Visitor —';
+        sel.appendChild(optNew);
+
+        var filter = (filterText || '').toLowerCase();
+        for (var i = 0; i < savedVisitorsData.length; i++) {
+            var v     = savedVisitorsData[i];
+            var label = v.visitor_name + (v.visitor_phone ? ' — ' + v.visitor_phone : '');
+            if (filter && label.toLowerCase().indexOf(filter) === -1) continue;
+            var opt   = document.createElement('option');
+            opt.value = String(i);
+            opt.text  = label;
+            sel.appendChild(opt);
+        }
+    }
+
+    function fillSavedVisitor() {
+        var sel = document.getElementById('savedVisitorSelect');
+        var idx = sel.value;
+        if (idx === '') return;
+        var v = savedVisitorsData[parseInt(idx, 10)];
+        if (!v) return;
+        var form = document.forms[0];
+        form.visitor_name.value  = v.visitor_name  || '';
+        form.visitor_phone.value = v.visitor_phone || '';
+        if (form.idnum) form.idnum.value = v.idnum || '';
+        if (form.plate) form.plate.value = v.plate || '';
+    }
+
+    document.getElementById('savedVisitorFilter')
+        .addEventListener('keyup', function () {
+            renderSavedVisitorOptions(this.value);
+        });
+    document.getElementById('savedVisitorSelect')
+        .addEventListener('change', fillSavedVisitor);
+
+    renderSavedVisitorOptions('');
+    </script>
+    <?php endif; ?>
     <?php
     pageFooter();
     exit;

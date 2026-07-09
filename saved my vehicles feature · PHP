@@ -1,0 +1,102 @@
+<?php
+// ============================================================
+// SAVED FOR LATER — "My Vehicles" feature, removed from
+// resident.php on 2026-07-09.
+// Originally lived in resident.php as the action=vehicles block,
+// linked from the main resident menu.
+//
+// Kept here in case this needs to be re-implemented under the
+// admin portal (e.g. admin.php?action=vehicles, scoped by erf
+// instead of session resident_id).
+//
+// NOTE: as written below, this code depends on:
+//   - $rid   (resident_id from session)   -> would need to become
+//             a param/lookup by erf if moved to admin
+//   - $rerf  (not used directly here, but resident context)
+//   - db(), verifyCsrfToken(), csrfField(), setFlash(), getFlash()
+//   - pageHeader(), renderHeader(), pageFooter()
+//   - table: resident_vehicles (resident_id, plate, description, created_at)
+// ============================================================
+
+// ── Menu button (was in resident.php menu-grid) ───────────
+/*
+        <a href="resident.php?action=vehicles" class="menu-btn">
+          <span class="icon">🚗</span>My Vehicles
+        </a>
+*/
+
+// ── VEHICLES action block ─────────────────────────────────
+if ($action === 'vehicles') {
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        verifyCsrfToken();
+        $act = $_POST['vact'] ?? '';
+        if ($act === 'add') {
+            $plate = strtoupper(trim($_POST['plate'] ?? ''));
+            $desc  = trim($_POST['description'] ?? '');
+            if ($plate) {
+                db()->prepare(
+                    "INSERT INTO resident_vehicles (resident_id,plate,description) VALUES (?,?,?)"
+                )->execute([$rid, $plate, $desc]);
+                setFlash('success', 'Vehicle added.');
+            }
+        } elseif ($act === 'delete') {
+            db()->prepare(
+                "DELETE FROM resident_vehicles WHERE id=? AND resident_id=?"
+            )->execute([(int)$_POST['vid'], $rid]);
+            setFlash('success', 'Vehicle removed.');
+        }
+        header('Location: resident.php?action=vehicles'); exit;
+    }
+    $stmt = db()->prepare(
+        "SELECT * FROM resident_vehicles WHERE resident_id=? ORDER BY created_at DESC"
+    );
+    $stmt->execute([$rid]);
+    $vehicles = $stmt->fetchAll();
+
+    pageHeader('My Vehicles', 'resident');
+    renderHeader('🚗 My Vehicles', 'resident.php?action=menu');
+    ?>
+    <div class="container">
+      <?= getFlash() ?>
+      <div class="card">
+        <div class="card-title">Registered Vehicles (LPR Gate Access)</div>
+        <?php if (empty($vehicles)): ?>
+          <p style="color:#666;font-size:.9rem;">No vehicles registered yet.</p>
+        <?php else: foreach ($vehicles as $v): ?>
+        <div style="display:flex;justify-content:space-between;align-items:center;
+                    padding:10px 0;border-bottom:1px solid #eee;">
+          <div>
+            <strong><?= htmlspecialchars($v['plate']) ?></strong>
+            <?php if ($v['description']): ?>
+              <span style="color:#666;font-size:.85rem;"> — <?= htmlspecialchars($v['description']) ?></span>
+            <?php endif; ?>
+          </div>
+          <form method="POST" onsubmit="return confirm('Remove this vehicle?')">
+            <?= csrfField() ?>
+            <input type="hidden" name="vact" value="delete">
+            <input type="hidden" name="vid"  value="<?= $v['id'] ?>">
+            <button class="btn btn-danger btn-sm">Remove</button>
+          </form>
+        </div>
+        <?php endforeach; endif; ?>
+      </div>
+      <div class="card">
+        <div class="card-title">Add Vehicle</div>
+        <form method="POST">
+          <?= csrfField() ?>
+          <input type="hidden" name="vact" value="add">
+          <div class="form-group">
+            <label>Plate Number *</label>
+            <input type="text" name="plate" required
+                   style="text-transform:uppercase;" placeholder="e.g. CBS 10009">
+          </div>
+          <div class="form-group">
+            <label>Description (optional)</label>
+            <input type="text" name="description" placeholder="e.g. Silver Toyota Hilux">
+          </div>
+          <button type="submit" class="btn btn-primary">Add Vehicle</button>
+        </form>
+      </div>
+    </div>
+    <?php pageFooter(); exit; ?>
+<?php } // end action
