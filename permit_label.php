@@ -48,7 +48,6 @@ const LABEL_W       = 101;   // mm — physical label width  (landscape)
 const LABEL_H       = 70;    // mm — physical label height
 const SHEET_COLS    = 2;
 const SHEET_ROWS    = 4;
-
 const MARGIN_LEFT   = 2.0;   // mm — distance from sheet's left edge to first column
 const MARGIN_TOP    = 6.5;   // mm — distance from sheet's top edge to first row
 const COL_GUTTER    = 2.0;   // mm — gap between the two columns
@@ -228,6 +227,15 @@ $html = '<!DOCTYPE html><html><head><meta charset="utf-8">
     text-overflow: ellipsis;
   }
   .card-details .row span { color: #888; }
+  .card-details .row-wrap {
+    font-size: 9.5pt;
+    color: #333;
+    line-height: 1.3;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+  }
+  .card-details .row-wrap span { color: #888; }
 
   .card-qr {
     width: 27mm;
@@ -289,7 +297,7 @@ $html = '<!DOCTYPE html><html><head><meta charset="utf-8">
         <div class="row"><span>Resident: </span>' . htmlspecialchars($sp['resident_name']) . '</div>
         <div class="row"><span>Erf: </span>' . htmlspecialchars($sp['resident_erfno']) . '</div>
         <div class="row"><span>Valid: </span>' . $validFrom . ' – ' . $validTo . '</div>
-        <div class="row"><span>Hours: </span>'
+        <div class="row-wrap"><span>Hours: </span>'
           . htmlspecialchars($sp['access_days'] ?? 'Mon–Sat')
           . ' '
           . substr($sp['access_start'] ?? '07:00:00', 0, 5)
