@@ -162,16 +162,16 @@ $html = '<!DOCTYPE html><html><head><meta charset="utf-8">
     vertical-align: middle;
   }
   .estate {
-    font-size: 6.5pt;
+    font-size: 10.5pt;
     font-weight: bold;
     letter-spacing: 0.3pt;
     text-transform: uppercase;
   }
   .cat {
-    font-size: 5.5pt;
+    font-size: 8.5pt;
     background: #c8a84b;
     color: #000;
-    padding: 0.6mm 2mm;
+    padding: 0.9mm 2.4mm;
     border-radius: 1mm;
     font-weight: bold;
     white-space: nowrap;
@@ -180,6 +180,7 @@ $html = '<!DOCTYPE html><html><head><meta charset="utf-8">
   /* Body: photo | details | QR */
   .card-body-table {
     width: 100%;
+    table-layout: fixed;
     height: calc(' . LABEL_H . 'mm - 10mm - 7mm);
     border-collapse: collapse;
   }
@@ -203,21 +204,24 @@ $html = '<!DOCTYPE html><html><head><meta charset="utf-8">
     display: block;
   }
 
-  .card-details { min-width: 0; }
+  .card-details {
+    width: 48mm;
+    min-width: 0;
+  }
   .card-details .name {
-    font-size: 8pt;
+    font-size: 12.5pt;
     font-weight: bold;
     color: #1a3c5e;
-    line-height: 1.25;
+    line-height: 1.15;
     margin-bottom: 1.2mm;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .card-details .row {
-    font-size: 6.2pt;
+    font-size: 9.5pt;
     color: #333;
-    line-height: 1.55;
+    line-height: 1.35;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -233,7 +237,7 @@ $html = '<!DOCTYPE html><html><head><meta charset="utf-8">
     height: 24mm;
   }
   .card-qr .code {
-    font-size: 5.5pt;
+    font-size: 8.5pt;
     font-weight: bold;
     font-family: monospace;
     color: #1a3c5e;
@@ -254,7 +258,7 @@ $html = '<!DOCTYPE html><html><head><meta charset="utf-8">
   }
   .card-footer-table td {
     padding: 1mm 2.5mm;
-    font-size: 5pt;
+    font-size: 7.5pt;
     color: #888;
     vertical-align: middle;
   }
@@ -263,7 +267,7 @@ $html = '<!DOCTYPE html><html><head><meta charset="utf-8">
 <div class="sheet">
   <div class="card">
     <table class="card-header-table"><tr>
-      <td style="text-align:left;"><span class="estate" style="color:#fff;">MOSSEL BAY GOLF ESTATE</span></td>
+      <td style="text-align:left;"><span class="estate" style="color:#fff;">GEMB ESTATE</span></td>
       <td style="text-align:right;"><span class="cat">' . htmlspecialchars($catLabel) . '</span></td>
     </tr></table>
 

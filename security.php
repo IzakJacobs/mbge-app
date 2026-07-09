@@ -1255,8 +1255,24 @@ if ($action === 'approvals') {
             <?php endif; ?>
             <?php if ($isApproved && !$isExpired): ?>
             
-            <a href="permit_photo_upload.php?id=<?= $sp['id'] ?>&type=<?= $sp['permit_type']==='card' ? 'card' : 'slip' ?>" target="_blank" class="btn btn-primary btn-sm">
-                 🖨️ <?= $sp['permit_type']==='card' ? 'Print Card' : 'Print Slip' ?>
+            <?php
+              // Print destination — "Card" categories get a wearable plastic
+              // permit (printed via permit_label.php onto W103 stock);
+              // everyone else gets the short-duration paper Slip.
+              $spCat          = $sp['category'] ?? '';
+              $cardCategories = ['domestic', 'resident_worker', 'contractor_lead'];
+              if (in_array($spCat, $cardCategories, true)) {
+                  $printType  = 'label';
+                  $printLabel = 'Print Card';
+              } else {
+                  // Fallback for any other/future category — honours the
+                  // stored permit_type column if it was ever set to 'card'.
+                  $printType  = ($sp['permit_type'] === 'card') ? 'label' : 'slip';
+                  $printLabel = ($printType === 'label') ? 'Print Card' : 'Print Slip';
+              }
+            ?>
+            <a href="permit_photo_upload.php?id=<?= $sp['id'] ?>&type=<?= $printType ?>" target="_blank" class="btn btn-primary btn-sm">
+                 🖨️ <?= $printLabel ?>
             </a>
             
             <form method="POST" style="display:inline" onsubmit="return confirm(<?= $sp['category']==='contractor_lead' ? "'Revoking this Lead will also revoke all their workers. Continue?'" : "'Revoke this service provider?'" ?>)">
