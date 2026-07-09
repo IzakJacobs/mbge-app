@@ -1,7 +1,7 @@
 <?php
 // ============================================================
 // admin_votes.php — Voting Engine Module (Admin only)
-// MBGE Access Control System
+// GEMB Access Control System
 // Version 2.0  |  2026-06-14
 //
 // Motions now live inside a Meeting (voting register), e.g.
@@ -1314,7 +1314,7 @@ if ($action === 'csv' && $motionId > 0) {
     $out = fopen('php://output', 'w');
     fputs($out, "\xEF\xBB\xBF");
 
-    fwrite($out, csvVoteRow(['MBGE HOA — Vote Result Certificate']));
+    fwrite($out, csvVoteRow(['GEMB HOA — Vote Result Certificate']));
     fwrite($out, csvVoteRow([]));
     fwrite($out, csvVoteRow(['Motion',          $motion['title']]));
     fwrite($out, csvVoteRow(['Resolution Type', $rt['label']]));

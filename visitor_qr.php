@@ -391,7 +391,7 @@ $appleUrl   = 'https://maps.apple.com/?daddr=' . $navQuery;
 
   <div class="card-footer">
     Present this screen to the guard on arrival.<br>
-    GEMB HOA Reg. 1999/001249/08 &nbsp;|&nbsp; POPIA Act 4 of 2013
+    GEMB &nbsp;|&nbsp; POPIA Act 4 of 2013
   </div>
 
 </div>

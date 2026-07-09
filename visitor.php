@@ -142,7 +142,7 @@ function spInviteContent(string $cat, string $code, string $spName, string $rnam
              . "and any required documents — using the link below:\n\n"
              . "{$url}\n\n"
              . "Reference code: {$code}\n\n"
-             . "GEMB HOA Reg. 1999/001249/08 | POPIA Act 4 of 2013";
+             . "GEMB | POPIA Act 4 of 2013";
     } else {
         $url = SITE_URL . '/sp_pass.php?code=' . $code;
         $wa  = "🏡 GEMB Service Provider Invite\n\n"
@@ -153,7 +153,7 @@ function spInviteContent(string $cat, string $code, string $spName, string $rnam
              . "complete registration and collect your access permit.\n\n"
              . "Tap the link below and show it to the Security Officer:\n{$url}\n\n"
              . "Reference code: {$code}\n\n"
-             . "GEMB HOA Reg. 1999/001249/08 | POPIA Act 4 of 2013";
+             . "GEMB | POPIA Act 4 of 2013";
     }
     return ['url' => $url, 'wa_message' => $wa, 'cat_label' => $catLabel];
 }

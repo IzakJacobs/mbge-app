@@ -345,7 +345,7 @@ $html = '<!DOCTYPE html><html><head><meta charset="utf-8">
   </div>
 
   <table class="slip-footer-table"><tr>
-    <td style="text-align:left;">GEMB HOA Reg. 1999/001249/08</td>
+    <td style="text-align:left;">GEMB</td>
     <td style="text-align:right;">POPIA Act 4 of 2013</td>
   </tr></table>
 

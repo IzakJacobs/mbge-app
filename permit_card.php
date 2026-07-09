@@ -288,7 +288,7 @@ $html .= '
   </tr></table>
 
   <table class="card-footer-table"><tr>
-    <td style="text-align:left;">GEMB HOA Reg. 1999/001249/08</td>
+    <td style="text-align:left;">GEMB</td>
     <td style="text-align:right;">POPIA Act 4 of 2013</td>
   </tr></table>
 </div>

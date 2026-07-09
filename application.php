@@ -16,7 +16,7 @@ if (!defined('APP_CARD_VALID_MONTHS'))define('APP_CARD_VALID_MONTHS', 12);      
 const APP_ALLOWED_MIME = ['application/pdf' => 'pdf', 'image/jpeg' => 'jpg', 'image/png' => 'png'];
 
 // ════════════════════════════════════════════════════════
-// TYPE CONFIGURATION — all four MBGE forms as pure config
+// TYPE CONFIGURATION — all four GEMB forms as pure config
 // ════════════════════════════════════════════════════════
 const APP_TYPES = [
 
@@ -77,7 +77,7 @@ const APP_TYPES = [
     ],
 
     'estate_agent' => [
-        'label'        => 'Estate Agent Registration (MBGE Requirements & Rules 2023)',
+        'label'        => 'Estate Agent Registration (GEMB Requirements & Rules 2023)',
         'icon'         => '🏢',
         'reg_types'    => ['new' => 'New Registration', 'renewal' => 'Annual Renewal'],
         'company_block'=> true,

@@ -1,7 +1,7 @@
 <?php
 // ============================================================
 // admin_meetings.php — Meeting / Voting Register Module (Admin only)
-// MBGE Access Control System
+// GEMB Access Control System
 // Version 1.0  |  2026-06-14
 //
 // A "meeting" (e.g. AGM November 2026) is the top-level voting
@@ -676,7 +676,7 @@ if ($action === 'send_tokens' && $meetingId > 0) {
                      . "To cast your vote, go to:\n" . $voteLoginUrl . "\n\n"
                      . "Enter your erf number and the 6-digit token above.\n"
                      . "This token can only be used once, from one device.\n\n"
-                     . "Regards,\nMBGE HOA Board";
+                     . "Regards,\nGEMB HOA Board";
 
             $ok = sendEmail($o['owner_email'], $subject, $body);
             if ($ok) {

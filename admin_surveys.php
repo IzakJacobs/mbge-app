@@ -1,7 +1,7 @@
 <?php
 // ============================================================
 // admin_surveys.php — Survey Module (Admin only)
-// MBGE Access Control System
+// GEMB Access Control System
 // Version 1.1  |  2026-06-13
 //
 // Actions:

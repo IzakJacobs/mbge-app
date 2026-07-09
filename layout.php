@@ -351,7 +351,6 @@ function pageFooter(): void {
     ?>
 <div class="site-footer">
   GEMB Access Control &nbsp;|&nbsp; POPIA Act 4 of 2013 &nbsp;|&nbsp; PSIRA Act 56 of 2001
-  &nbsp;|&nbsp; HOA Reg. 1999/001249/08
 </div>
 <script>
 if ('serviceWorker' in navigator) {
