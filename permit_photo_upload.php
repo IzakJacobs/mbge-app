@@ -6,11 +6,12 @@
  *   1. Security uploads a photo file (any common image format)
  *   2. Photo is shown in a live cropper, locked to portrait ratio
  *   3. On "Approve & Print", the cropped image (base64 PNG) is POSTed
- *      to permit_card.php or permit_slip.php as `photo_data`
+ *      to permit_card.php, permit_slip.php, or permit_label.php as `photo_data`
  *   4. Nothing is saved to disk or DB — fresh upload required every print
  *
  * Usage: permit_photo_upload.php?id=42&type=card
  *        permit_photo_upload.php?id=42&type=slip
+ *        permit_photo_upload.php?id=42&type=label   (W103 A4 label sheet, pick 1 of 8 slots)
  */
 session_start();
 require_once __DIR__ . '/config.php';
@@ -20,7 +21,8 @@ if (empty($_SESSION['security_id']) && empty($_SESSION['admin_id'])) {
 }
 
 $id   = (int)($_GET['id'] ?? 0);
-$type = ($_GET['type'] ?? '') === 'card' ? 'card' : 'slip';
+$typeParam = $_GET['type'] ?? '';
+$type = in_array($typeParam, ['card', 'label'], true) ? $typeParam : 'slip';
 if (!$id) die('Missing ID');
 
 $sp = db()->prepare("SELECT id, service_name, category, unique_code FROM service_providers WHERE id=? LIMIT 1");
@@ -28,12 +30,13 @@ $sp->execute([$id]);
 $sp = $sp->fetch();
 if (!$sp) die('Record not found');
 
-// Crop ratio differs slightly between the two permit formats —
-// both are close to a passport portrait, so one ratio works for both.
-$cropTargetW = ($type === 'card') ? 240 : 320;  // px, output resolution
-$cropTargetH = ($type === 'card') ? 320 : 400;  // 3:4 portrait ratio
+// Crop ratio differs slightly between permit formats — all close to a
+// passport portrait, so one ratio family works for all three.
+$cropTargetW = ($type === 'card') ? 240 : (($type === 'label') ? 320 : 320);  // px, output resolution
+$cropTargetH = ($type === 'card') ? 320 : (($type === 'label') ? 427 : 400);  // ~3:4 portrait ratio
 
-$printAction = ($type === 'card') ? 'permit_card.php' : 'permit_slip.php';
+$printAction = ($type === 'card') ? 'permit_card.php'
+             : (($type === 'label') ? 'permit_label.php' : 'permit_slip.php');
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -156,6 +159,47 @@ $printAction = ($type === 'card') ? 'permit_card.php' : 'permit_slip.php';
   }
   .sp-info b { color: #1a3c5e; }
 
+  /* ── Label sheet position picker ── */
+  .sheet-picker {
+    max-width: 220px;
+    margin: 0 auto;
+  }
+  .sheet-picker .grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px;
+    border: 2px solid #b7c2cc;
+    border-radius: 6px;
+    padding: 8px;
+    background: #f4f6f8;
+  }
+  .sheet-picker label {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 44px;
+    border: 2px solid #dde3e8;
+    border-radius: 4px;
+    background: #fff;
+    font-size: 13px;
+    font-weight: bold;
+    color: #555;
+    cursor: pointer;
+    user-select: none;
+  }
+  .sheet-picker input[type=radio] {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+  .sheet-picker input[type=radio]:checked + label {
+    border-color: #1a3c5e;
+    background: #1a3c5e;
+    color: #fff;
+  }
+  .sheet-picker .slot { position: relative; }
+
   .actions {
     display: flex;
     gap: 10px;
@@ -194,7 +238,9 @@ $printAction = ($type === 'card') ? 'permit_card.php' : 'permit_slip.php';
 
   <div class="header">
     <h1>Permit photo</h1>
-    <p>Upload a clear, front-facing photo before printing the <?= $type === 'card' ? 'permit card' : 'permit slip' ?></p>
+    <p>Upload a clear, front-facing photo before printing the
+      <?= $type === 'card' ? 'permit card' : ($type === 'label' ? 'permit label' : 'permit slip') ?>
+    </p>
   </div>
 
   <div class="body">
@@ -232,6 +278,28 @@ $printAction = ($type === 'card') ? 'permit_card.php' : 'permit_slip.php';
 
     <form id="printForm" method="POST" action="<?= htmlspecialchars($printAction) ?>?id=<?= $id ?>">
       <input type="hidden" name="photo_data" id="photoDataField">
+
+      <?php if ($type === 'label'): ?>
+      <div class="step" style="margin-top:18px;">
+        <div class="step-label">3. Label position on sheet</div>
+        <div class="sheet-picker">
+          <div class="grid">
+            <?php for ($p = 1; $p <= 8; $p++): ?>
+            <div class="slot">
+              <input type="radio" name="pos" value="<?= $p ?>"
+                     id="posSlot<?= $p ?>" <?= $p === 1 ? 'checked' : '' ?>>
+              <label for="posSlot<?= $p ?>"><?= $p ?></label>
+            </div>
+            <?php endfor; ?>
+          </div>
+        </div>
+        <div class="hint" style="text-align:center;">
+          Matches the physical sheet layout — 2 across, 4 down.<br>
+          Pick the next empty label.
+        </div>
+      </div>
+      <?php endif; ?>
+
       <div class="actions">
         <button type="button" class="btn-secondary" onclick="closeOrRedirect();">Cancel</button>
         <button type="button" class="btn-primary" id="approveBtn" disabled onclick="submitPermit();">Approve &amp; print</button>

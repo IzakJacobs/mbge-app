@@ -1,13 +1,21 @@
 <?php
 /**
- * permit_card.php — GEMB Credit Card Permit (85×54mm)
+ * permit_label.php — GEMB Permit Card for W103 A4 label sheets
+ * Label stock: TOWER W103 (8up), 101 x 70mm, 2 columns x 4 rows per A4 sheet
  * For: domestic, resident_worker, contractor_lead
- * Called by: security.php?action=print_permit&id=XX
+ * Called by: permit_photo_upload.php (type=label)
  *
  * Requires: Dompdf (already installed for export files)
- * Usage: permit_card.php?id=42
+ * Usage: permit_label.php?id=42&pos=1   (pos 1-8, POSTed photo_data optional)
  *
- * v2 — adds photo support (sp.photo column, stored as filename or base64)
+ * ── CALIBRATION ──────────────────────────────────────────
+ * Nobody publishes exact margin/pitch specs for this label stock, so the
+ * four constants below are a starting estimate (labels butted edge-to-edge,
+ * symmetric side margins) derived purely from label size vs A4 dimensions.
+ * Print ONE test sheet on plain paper, hold it up against a real label
+ * sheet, and nudge these numbers by 1-3mm until the print lines up.
+ * This is standard practice for label printing, not a GEMB-specific issue.
+ * ──────────────────────────────────────────────────────────
  */
 session_start();
 require_once __DIR__ . '/config.php';
@@ -24,36 +32,53 @@ if (empty($_SESSION['security_id']) && empty($_SESSION['admin_id'])) {
 $id = (int)($_GET['id'] ?? 0);
 if (!$id) die('Missing ID');
 
+// Position on the sheet — reads left-to-right, top-to-bottom (1-8)
+$pos = (int)($_POST['pos'] ?? $_GET['pos'] ?? 1);
+if ($pos < 1 || $pos > 8) $pos = 1;
+
 $sp = db()->prepare("SELECT * FROM service_providers WHERE id=? LIMIT 1");
 $sp->execute([$id]);
 $sp = $sp->fetch();
 if (!$sp) die('Record not found');
 
+// ════════════════════════════════════════════════════════
+// CALIBRATION CONSTANTS — adjust after a test print
+// ════════════════════════════════════════════════════════
+const LABEL_W       = 101;   // mm — physical label width  (landscape)
+const LABEL_H       = 70;    // mm — physical label height
+const SHEET_COLS    = 2;
+const SHEET_ROWS    = 4;
+const MARGIN_LEFT   = 4.0;   // mm — distance from sheet's left edge to first column
+const MARGIN_TOP    = 8.5;   // mm — distance from sheet's top edge to first row
+const COL_GUTTER    = 0.0;   // mm — gap between the two columns
+const ROW_GUTTER    = 0.0;   // mm — gap between rows
+
+$col = ($pos - 1) % SHEET_COLS;
+$row = intdiv($pos - 1, SHEET_COLS);
+$offsetX = MARGIN_LEFT + $col * (LABEL_W + COL_GUTTER);
+$offsetY = MARGIN_TOP  + $row * (LABEL_H + ROW_GUTTER);
+
 // ── Photo ────────────────────────────────────────────────
-// Priority:
-//   1. $_POST['photo_data'] — a fresh upload from permit_photo_upload.php
-//      (data URI, not persisted — used once for this print only)
-//   2. sp.photo — a stored filename or base64 string (legacy / future use)
-//   3. empty — show a placeholder silhouette
+// Same priority order as permit_card.php:
+//   1. $_POST['photo_data'] — fresh upload from permit_photo_upload.php
+//   2. sp.photo — stored filename or base64 (legacy / future use)
+//   3. placeholder silhouette
 $photoTag = '';
 if (!empty($_POST['photo_data']) && str_starts_with($_POST['photo_data'], 'data:image/')) {
     $photoTag = '<img src="' . htmlspecialchars($_POST['photo_data']) . '">';
 } elseif (!empty($sp['photo'])) {
     $raw = $sp['photo'];
     if (str_starts_with($raw, 'data:image/')) {
-        // Already a data URI
         $photoTag = '<img src="' . htmlspecialchars($raw) . '">';
     } else {
-        // Treat as filename
         $photoPath = __DIR__ . '/uploads/sp_photos/' . basename($raw);
         if (file_exists($photoPath)) {
-            $mime      = mime_content_type($photoPath);
-            $photoB64  = base64_encode(file_get_contents($photoPath));
-            $photoTag  = '<img src="data:' . $mime . ';base64,' . $photoB64 . '">';
+            $mime     = mime_content_type($photoPath);
+            $photoB64 = base64_encode(file_get_contents($photoPath));
+            $photoTag = '<img src="data:' . $mime . ';base64,' . $photoB64 . '">';
         }
     }
 }
-// Placeholder SVG silhouette when no photo
 if (!$photoTag) {
     $photoTag = '<svg viewBox="0 0 60 80" xmlns="http://www.w3.org/2000/svg"
         style="width:100%;height:100%;display:block;">
@@ -100,73 +125,72 @@ $catLabel  = $catLabels[$sp['category'] ?? 'domestic'] ?? 'Service Provider';
 $validFrom = date('d M Y', strtotime($sp['start_date']));
 $validTo   = date('d M Y', strtotime($sp['end_date']));
 
-// ── HTML (85×54mm credit card) ───────────────────────────
+// ── HTML — single 101x70mm card, absolutely positioned on an
+//    A4 canvas to land on label slot $pos of the W103 sheet ──
 $html = '<!DOCTYPE html><html><head><meta charset="utf-8">
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body { font-family: Arial, sans-serif; background:#fff; }
 
-  .page-table {
-    width: 100%;
-  }
-  .page-table td {
-    padding: 5 4mm 8mm 5;
-    vertical-align: top;
+  /* A4 canvas — the card below is positioned absolutely within this */
+  .sheet {
+    position: relative;
+    width: 210mm;
+    height: 297mm;
   }
 
-  /* 85×54mm card */
   .card {
-    width: 85mm;
-    height: 54mm;
+    position: absolute;
+    top: ' . $offsetY . 'mm;
+    left: ' . $offsetX . 'mm;
+    width: ' . LABEL_W . 'mm;
+    height: ' . LABEL_H . 'mm;
     border: 0.5mm solid #1a3c5e;
     border-radius: 3mm;
     overflow: hidden;
-    position: relative;
     background: #fff;
-    page-break-inside: avoid;
   }
 
   /* Header band */
   .card-header-table {
     width: 100%;
-    height: 8mm;
+    height: 10mm;
     background: #1a3c5e;
   }
   .card-header-table td {
-    padding: 1.5mm 2mm 1mm;
+    padding: 2mm 2.5mm 1.5mm;
     vertical-align: middle;
   }
   .estate {
-    font-size: 5pt;
+    font-size: 6.5pt;
     font-weight: bold;
     letter-spacing: 0.3pt;
     text-transform: uppercase;
   }
   .cat {
-    font-size: 4.5pt;
+    font-size: 5.5pt;
     background: #c8a84b;
     color: #000;
-    padding: 0.5mm 1.5mm;
+    padding: 0.6mm 2mm;
     border-radius: 1mm;
     font-weight: bold;
     white-space: nowrap;
   }
 
-  /* Body: photo | details | QR — table layout for Dompdf reliability */
+  /* Body: photo | details | QR */
   .card-body-table {
     width: 100%;
-    height: calc(54mm - 8mm - 6mm);
+    height: calc(' . LABEL_H . 'mm - 10mm - 7mm);
     border-collapse: collapse;
   }
   .card-body-table td {
-    padding: 1.5mm;
+    padding: 2mm;
     vertical-align: middle;
   }
 
-  /* Photo strip — left */
   .card-photo {
-    width: 18mm;
-    height: 24mm;
+    width: 24mm;
+    height: 32mm;
     border: 0.3mm solid #d0d8e0;
     border-radius: 1mm;
     overflow: hidden;
@@ -179,50 +203,45 @@ $html = '<!DOCTYPE html><html><head><meta charset="utf-8">
     display: block;
   }
 
-  /* Details — centre */
-  .card-details {
-    min-width: 0;
-  }
+  .card-details { min-width: 0; }
   .card-details .name {
-    font-size: 6.5pt;
+    font-size: 8pt;
     font-weight: bold;
     color: #1a3c5e;
-    line-height: 1.2;
-    margin-bottom: 1mm;
+    line-height: 1.25;
+    margin-bottom: 1.2mm;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .card-details .row {
-    font-size: 5pt;
+    font-size: 6.2pt;
     color: #333;
-    line-height: 1.5;
+    line-height: 1.55;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .card-details .row span { color: #888; }
 
-  /* QR — right */
   .card-qr {
-    width: 22mm;
+    width: 27mm;
     text-align: center;
   }
   .card-qr img {
-    width: 20mm;
-    height: 20mm;
+    width: 24mm;
+    height: 24mm;
   }
   .card-qr .code {
-    font-size: 4.5pt;
+    font-size: 5.5pt;
     font-weight: bold;
     font-family: monospace;
     color: #1a3c5e;
     letter-spacing: 0.5pt;
-    margin-top: 0.5mm;
+    margin-top: 0.6mm;
     text-align: center;
   }
 
-  /* Footer */
   .card-footer-table {
     position: absolute;
     bottom: 0;
@@ -231,71 +250,63 @@ $html = '<!DOCTYPE html><html><head><meta charset="utf-8">
     width: 100%;
     background: #f5f5f5;
     border-top: 0.3mm solid #ddd;
-    height: 6mm;
+    height: 7mm;
   }
   .card-footer-table td {
-    padding: 0.8mm 2mm;
-    font-size: 4pt;
+    padding: 1mm 2.5mm;
+    font-size: 5pt;
     color: #888;
     vertical-align: middle;
   }
 </style>
-</head><body><table class="page-table"><tr>';
+</head><body>
+<div class="sheet">
+  <div class="card">
+    <table class="card-header-table"><tr>
+      <td style="text-align:left;"><span class="estate" style="color:#fff;">MOSSEL BAY GOLF ESTATE</span></td>
+      <td style="text-align:right;"><span class="cat">' . htmlspecialchars($catLabel) . '</span></td>
+    </tr></table>
 
-for ($copy = 1; $copy <= 2; $copy++):
-$html .= '
-<td>
-<div class="card">
-  <table class="card-header-table"><tr>
-    <td style="text-align:left;"><span class="estate" style="color:#fff;">MOSSEL BAY GOLF ESTATE</span></td>
-    <td style="text-align:right;"><span class="cat">' . htmlspecialchars($catLabel) . '</span></td>
-  </tr></table>
+    <table class="card-body-table"><tr>
 
-  <table class="card-body-table"><tr>
+      <td style="width:24mm;">
+        <div class="card-photo">
+          ' . $photoTag . '
+        </div>
+      </td>
 
-    <!-- Photo -->
-    <td style="width:18mm;">
-      <div class="card-photo">
-        ' . $photoTag . '
-      </div>
-    </td>
+      <td class="card-details">
+        <div class="name">' . htmlspecialchars($sp['service_name']) . '</div>
+        ' . ($sp['id_number'] ? '
+        <div class="row"><span>ID: </span>' . htmlspecialchars($sp['id_number']) . '</div>' : '') . '
+        ' . ($sp['company_name'] ? '
+        <div class="row"><span>Co: </span>' . htmlspecialchars($sp['company_name']) . '</div>' : '') . '
+        <div class="row"><span>Resident: </span>' . htmlspecialchars($sp['resident_name']) . '</div>
+        <div class="row"><span>Erf: </span>' . htmlspecialchars($sp['resident_erfno']) . '</div>
+        <div class="row"><span>Valid: </span>' . $validFrom . ' – ' . $validTo . '</div>
+        <div class="row"><span>Hours: </span>'
+          . htmlspecialchars($sp['access_days'] ?? 'Mon–Sat')
+          . ' '
+          . substr($sp['access_start'] ?? '07:00:00', 0, 5)
+          . '–'
+          . substr($sp['access_end']   ?? '17:00:00', 0, 5) . '
+        </div>
+      </td>
 
-    <!-- Details -->
-    <td class="card-details">
-      <div class="name">' . htmlspecialchars($sp['service_name']) . '</div>
-      ' . ($sp['id_number'] ? '
-      <div class="row"><span>ID: </span>' . htmlspecialchars($sp['id_number']) . '</div>' : '') . '
-      ' . ($sp['company_name'] ? '
-      <div class="row"><span>Co: </span>' . htmlspecialchars($sp['company_name']) . '</div>' : '') . '
-      <div class="row"><span>Resident: </span>' . htmlspecialchars($sp['resident_name']) . '</div>
-      <div class="row"><span>Erf: </span>' . htmlspecialchars($sp['resident_erfno']) . '</div>
-      <div class="row"><span>Valid: </span>' . $validFrom . ' – ' . $validTo . '</div>
-      <div class="row"><span>Hours: </span>'
-        . htmlspecialchars($sp['access_days'] ?? 'Mon–Sat')
-        . ' '
-        . substr($sp['access_start'] ?? '07:00:00', 0, 5)
-        . '–'
-        . substr($sp['access_end']   ?? '17:00:00', 0, 5) . '
-      </div>
-    </td>
+      <td class="card-qr">
+        ' . $qrTag . '
+        <div class="code">' . htmlspecialchars($sp['unique_code']) . '</div>
+      </td>
 
-    <!-- QR -->
-    <td class="card-qr">
-      ' . $qrTag . '
-      <div class="code">' . htmlspecialchars($sp['unique_code']) . '</div>
-    </td>
+    </tr></table>
 
-  </tr></table>
-
-  <table class="card-footer-table"><tr>
-    <td style="text-align:left;">GEMB</td>
-    <td style="text-align:right;">POPIA Act 4 of 2013</td>
-  </tr></table>
+    <table class="card-footer-table"><tr>
+      <td style="text-align:left;">GEMB</td>
+      <td style="text-align:right;">POPIA Act 4 of 2013</td>
+    </tr></table>
+  </div>
 </div>
-</td>';
-endfor;
-
-$html .= '</tr></table></body></html>';
+</body></html>';
 
 $opt = new Options();
 $opt->set('isRemoteEnabled', true);
@@ -305,12 +316,12 @@ $pdf->setPaper('A4', 'portrait');
 $pdf->render();
 $output = $pdf->output();
 
-// ── Audit log: save PDF to disk and record the print event ──
+// ── Audit log — reuses permit_type='card' (no schema change) ──
 try {
     $monthDir = __DIR__ . '/uploads/permits/' . date('Y-m');
     if (!is_dir($monthDir)) @mkdir($monthDir, 0755, true);
 
-    $filename = 'card_' . $sp['unique_code'] . '_' . date('YmdHis') . '.pdf';
+    $filename = 'label_' . $sp['unique_code'] . '_pos' . $pos . '_' . date('YmdHis') . '.pdf';
     $filePath = $monthDir . '/' . $filename;
     $relPath  = '/uploads/permits/' . date('Y-m') . '/' . $filename;
 
@@ -336,7 +347,7 @@ try {
 
 // ── Stream PDF to browser ─────────────────────────────────
 header('Content-Type: application/pdf');
-header('Content-Disposition: inline; filename="permit_card_' . $sp['unique_code'] . '.pdf"');
+header('Content-Disposition: inline; filename="permit_label_' . $sp['unique_code'] . '.pdf"');
 header('Content-Length: ' . strlen($output));
 header('Cache-Control: private, max-age=0, must-revalidate');
 echo $output;
