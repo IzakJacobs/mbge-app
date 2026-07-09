@@ -89,7 +89,7 @@ if ($action === 'login') {
             // Fallback: if code empty default to A
             if (!preg_match('/^[A-Z]$/', $code)) $code = 'A';
 
-            $identifier = $erf . $code;  // e.g. E15227A
+            $identifier = $erf . $code;  // e.g. E12345A
 
             /* ── Brute force check ── */
             $lockCheck = bfIsLocked('resident', $identifier);
@@ -210,7 +210,7 @@ if ($action === 'login') {
       <div class="login-card">
         <div class="login-logo">🏠</div>
         <h2>Resident Portal</h2>
-        <div class="subtitle">Mossel Bay Golf Estate</div>
+        <div class="subtitle">GEMB Estate</div>
 
         <?php if ($error): ?>
           <div class="alert alert-danger"><?= htmlspecialchars($error) ?></div>
@@ -226,7 +226,7 @@ if ($action === 'login') {
                    style="text-transform:uppercase;font-size:1.1rem;
                           letter-spacing:0.1em;text-align:center;"
                    oninput="this.value=this.value.toUpperCase();loadOccupants(this.value)"
-                   placeholder="e.g. E15227"
+                   placeholder="e.g. E12345"
                    maxlength="10">
           </div>
           <div class="form-group" id="occupantGroup" style="display:none;">
@@ -349,7 +349,7 @@ if ($action === 'login') {
         </div>
         <form method="POST" action="resident.php?action=login">
           <div class="form-group">
-            <label>New 4-digit PIN</label>
+            <label>New 6-digit OTP</label>
             <input type="password" name="new_pin" required autofocus
                    style="font-size:1.6rem;letter-spacing:0.4em;text-align:center;"
                    maxlength="4" pattern="\d{4}" inputmode="numeric"
