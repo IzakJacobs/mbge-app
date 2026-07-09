@@ -110,7 +110,7 @@ $html = '<!DOCTYPE html><html><head><meta charset="utf-8">
     width: 100%;
   }
   .page-table td {
-    padding: 5 4mm 8mm 5;
+    padding: 20 4mm 8mm 25;
     vertical-align: top;
   }
 
