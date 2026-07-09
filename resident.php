@@ -349,7 +349,7 @@ if ($action === 'login') {
         </div>
         <form method="POST" action="resident.php?action=login">
           <div class="form-group">
-            <label>New 6-digit OTP</label>
+            <label>New 4-digit PIN</label>
             <input type="password" name="new_pin" required autofocus
                    style="font-size:1.6rem;letter-spacing:0.4em;text-align:center;"
                    maxlength="4" pattern="\d{4}" inputmode="numeric"
@@ -403,9 +403,6 @@ if ($action === 'menu') {
         </a>
         <a href="request_new.php" class="menu-btn">
           <span class="icon">📝</span>New Request
-        </a>
-        <a href="agent_invite.php" class="menu-btn">
-          <span class="icon">🏢</span>Invite Agent
         </a>
         <a href="document_archive.php" class="menu-btn">
           <span class="icon">📄</span>Estate Documents
