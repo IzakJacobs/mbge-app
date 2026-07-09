@@ -48,9 +48,10 @@ const LABEL_W       = 101;   // mm — physical label width  (landscape)
 const LABEL_H       = 70;    // mm — physical label height
 const SHEET_COLS    = 2;
 const SHEET_ROWS    = 4;
-const MARGIN_LEFT   = 4.0;   // mm — distance from sheet's left edge to first column
-const MARGIN_TOP    = 8.5;   // mm — distance from sheet's top edge to first row
-const COL_GUTTER    = 0.0;   // mm — gap between the two columns
+
+const MARGIN_LEFT   = 2.0;   // mm — distance from sheet's left edge to first column
+const MARGIN_TOP    = 6.5;   // mm — distance from sheet's top edge to first row
+const COL_GUTTER    = 2.0;   // mm — gap between the two columns
 const ROW_GUTTER    = 0.0;   // mm — gap between rows
 
 $col = ($pos - 1) % SHEET_COLS;
