@@ -133,13 +133,15 @@ function pageHeader(string $title, string $role = ''): void {
   --font:      -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: var(--bg); font-family: var(--font); color: var(--text); min-height: 100vh; }
+body { background: var(--bg); font-family: var(--font); color: #1a1a2e; color: var(--text); min-height: 100vh; }
 
 /* ── Header ── */
 .site-header {
-  background: var(--accent); color: #fff; padding: 0 16px;
-  display: flex; align-items: center; justify-content: space-between;
-  height: 56px; position: sticky; top: 0; z-index: 100;
+  background: <?= $accent ?>; background: var(--accent); color: #fff; padding: 0 16px;
+  display: -webkit-box; display: -webkit-flex; display: flex;
+  -webkit-box-align: center; -webkit-align-items: center; align-items: center;
+  -webkit-box-pack: justify; -webkit-justify-content: space-between; justify-content: space-between;
+  height: 56px; position: -webkit-sticky; position: sticky; top: 0; z-index: 100;
   box-shadow: 0 2px 8px rgba(0,0,0,.2);
 }
 .site-header h1 { font-size: 1.05rem; font-weight: 600; letter-spacing: .3px; }
@@ -157,15 +159,19 @@ body { background: var(--bg); font-family: var(--font); color: var(--text); min-
   background: var(--card-bg); border-radius: var(--radius);
   box-shadow: var(--shadow); padding: 20px; margin-bottom: 18px;
 }
-.card-title { font-size: 1rem; font-weight: 600; margin-bottom: 14px; color: var(--accent); }
+.card-title { font-size: 1rem; font-weight: 600; margin-bottom: 14px; color: <?= $accent ?>; color: var(--accent); }
 
 /* ── Menu grid ── */
 .menu-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px,1fr)); gap: 12px; }
 .menu-btn {
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  background: var(--card-bg); border: 2px solid var(--accent);
+  display: -webkit-box; display: -webkit-flex; display: flex;
+  -webkit-box-orient: vertical; -webkit-box-direction: normal;
+  -webkit-flex-direction: column; flex-direction: column;
+  -webkit-box-align: center; -webkit-align-items: center; align-items: center;
+  -webkit-box-pack: center; -webkit-justify-content: center; justify-content: center;
+  background: var(--card-bg); border: 2px solid <?= $accent ?>; border: 2px solid var(--accent);
   border-radius: var(--radius); padding: 18px 10px; text-decoration: none;
-  color: var(--accent); font-weight: 600; font-size: .85rem; text-align: center;
+  color: <?= $accent ?>; color: var(--accent); font-weight: 600; font-size: .85rem; text-align: center;
   transition: all .2s; gap: 8px;
 }
 .menu-btn:hover { background: var(--accent); color: #fff; transform: translateY(-2px); box-shadow: var(--shadow); }
@@ -173,14 +179,14 @@ body { background: var(--bg); font-family: var(--font); color: var(--text); min-
 
 /* ── Forms ── */
 .form-group { margin-bottom: 14px; }
-.form-group label { display: block; font-size: .85rem; font-weight: 600; margin-bottom: 5px; color: var(--muted); }
+.form-group label { display: block; font-size: .85rem; font-weight: 600; margin-bottom: 5px; color: #6c757d; color: var(--muted); }
 .form-group input, .form-group select, .form-group textarea {
-  width: 100%; padding: 10px 12px; border: 1px solid var(--border);
+  width: 100%; padding: 10px 12px; border: 1px solid #dee2e6; border: 1px solid var(--border);
   border-radius: 6px; font-size: .95rem; font-family: var(--font);
   transition: border-color .2s;
 }
 .form-group input:focus, .form-group select:focus, .form-group textarea:focus {
-  outline: none; border-color: var(--accent);
+  outline: none; border-color: <?= $accent ?>; border-color: var(--accent);
 }
 .btn {
   display: inline-block; padding: 10px 22px; border-radius: 6px;
@@ -188,10 +194,10 @@ body { background: var(--bg); font-family: var(--font); color: var(--text); min-
   text-decoration: none; transition: opacity .2s;
 }
 .btn:hover { opacity: .85; }
-.btn-primary   { background: var(--accent); color: #fff; }
+.btn-primary   { background: <?= $accent ?>; background: var(--accent); color: #fff; }
 .btn-success   { background: var(--success); color: #fff; }
 .btn-danger    { background: var(--danger); color: #fff; }
-.btn-secondary { background: var(--muted); color: #fff; }
+.btn-secondary { background: #6c757d; background: var(--muted); color: #fff; }
 .btn-grey      { background: #6c757d; color: #fff; }
 .btn-sm        { padding: 5px 12px; font-size: .82rem; }
 .btn-block     { display: block; width: 100%; text-align: center; }
@@ -199,7 +205,7 @@ body { background: var(--bg); font-family: var(--font); color: var(--text); min-
 /* ── Tables ── */
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: .88rem; }
-th { background: var(--accent); color: #fff; padding: 9px 10px; text-align: left; font-weight: 600; }
+th { background: <?= $accent ?>; background: var(--accent); color: #fff; padding: 9px 10px; text-align: left; font-weight: 600; }
 td { padding: 8px 10px; border-bottom: 1px solid var(--border); }
 tr:hover td { background: #f8f9fa; }
 
@@ -223,27 +229,29 @@ tr:hover td { background: #f8f9fa; }
 
 /* ── Login page ── */
 .login-wrap {
-  min-height: 100vh; display: flex; align-items: center; justify-content: center;
-  background: linear-gradient(135deg, var(--accent) 0%, #1a1a2e 100%); padding: 20px;
+  min-height: 100vh; display: -webkit-box; display: -webkit-flex; display: flex;
+  -webkit-box-align: center; -webkit-align-items: center; align-items: center;
+  -webkit-box-pack: center; -webkit-justify-content: center; justify-content: center;
+  background: <?= $accent ?>; background: linear-gradient(135deg, var(--accent) 0%, #1a1a2e 100%); padding: 20px;
 }
 .login-card {
   background: #fff; border-radius: 14px; padding: 36px 28px;
   width: 100%; max-width: 380px; box-shadow: 0 8px 32px rgba(0,0,0,.25);
 }
-.login-card h2 { text-align: center; color: var(--accent); margin-bottom: 6px; }
-.login-card .subtitle { text-align: center; color: var(--muted); font-size: .85rem; margin-bottom: 24px; }
+.login-card h2 { text-align: center; color: <?= $accent ?>; color: var(--accent); margin-bottom: 6px; }
+.login-card .subtitle { text-align: center; color: #6c757d; color: var(--muted); font-size: .85rem; margin-bottom: 24px; }
 .login-logo { text-align: center; font-size: 3rem; margin-bottom: 10px; }
 
 /* ── POPIA notice ── */
 .popia-notice {
-  font-size: .75rem; color: var(--muted); border-top: 1px solid var(--border);
+  font-size: .75rem; color: #6c757d; color: var(--muted); border-top: 1px solid #dee2e6; border-top: 1px solid var(--border);
   margin-top: 16px; padding-top: 10px; line-height: 1.4;
 }
 
 /* ── Footer ── */
 .site-footer {
-  text-align: center; font-size: .72rem; color: var(--muted);
-  padding: 14px; border-top: 1px solid var(--border); margin-top: 30px;
+  text-align: center; font-size: .72rem; color: #6c757d; color: var(--muted);
+  padding: 14px; border-top: 1px solid #dee2e6; border-top: 1px solid var(--border); margin-top: 30px;
 }
 
 /* ── Mobile ── */
@@ -252,9 +260,88 @@ tr:hover td { background: #f8f9fa; }
   .container { padding: 14px 10px 60px; }
   .hide-mobile { display: none; }
 }
+
+/* ════════════════════════════════════════════════════════
+   ELDERLY-FRIENDLY RESIDENT LAYOUT
+   Scoped to .role-resident only — admin/security/guard
+   screens are untouched. Targets old devices too (e.g.
+   iPhone 4 / iOS 7): single-column flex instead of CSS
+   Grid (unsupported pre-iOS 10.3), -webkit- prefixes on
+   every flex declaration, and larger everything.
+   ════════════════════════════════════════════════════════ */
+.role-resident .container { max-width: 480px; }
+
+.role-resident .menu-grid {
+  display: -webkit-box; display: -webkit-flex; display: flex;
+  -webkit-box-orient: vertical; -webkit-box-direction: normal;
+  -webkit-flex-direction: column; flex-direction: column;
+  gap: 14px;
+}
+.role-resident .menu-btn {
+  -webkit-box-orient: horizontal; -webkit-box-direction: normal;
+  -webkit-flex-direction: row; flex-direction: row;
+  -webkit-box-pack: flex-start; -webkit-justify-content: flex-start; justify-content: flex-start;
+  min-height: 78px;
+  padding: 16px 20px;
+  border-width: 3px;
+  border-radius: 14px;
+  font-size: 1.25rem;
+  font-weight: 700;
+  gap: 16px;
+}
+.role-resident .menu-btn .icon { font-size: 2.1rem; }
+.role-resident .menu-btn:active { background: <?= $accent ?>; background: var(--accent); color: #fff; }
+
+.role-resident .site-header h1 { font-size: 1.15rem; }
+.role-resident .site-header { height: 62px; }
+.role-resident .site-header a.logout-btn {
+  font-size: 1rem; padding: 8px 16px; border-width: 2px;
+}
+
+.role-resident .card { padding: 20px; }
+.role-resident .card-title { font-size: 1.1rem; }
+
+.role-resident .form-group label { font-size: 1.05rem; margin-bottom: 8px; }
+.role-resident .form-group input,
+.role-resident .form-group select,
+.role-resident .form-group textarea {
+  font-size: 1.2rem;
+  padding: 14px 16px;
+  min-height: 52px;
+  border-width: 2px;
+  border-radius: 8px;
+}
+
+.role-resident .btn {
+  padding: 16px 26px;
+  font-size: 1.15rem;
+  font-weight: 700;
+  border-radius: 10px;
+  min-height: 56px;
+}
+.role-resident .btn-sm {
+  padding: 10px 16px;
+  font-size: 1rem;
+  min-height: 44px;
+}
+
+.role-resident .badge {
+  font-size: .85rem;
+  padding: 5px 12px;
+}
+
+.role-resident .alert {
+  font-size: 1.05rem;
+  padding: 14px 18px;
+}
+
+.role-resident .popia-notice,
+.role-resident .site-footer {
+  font-size: .82rem;
+}
 </style>
 </head>
-<body>
+<body class="role-<?= htmlspecialchars($role ?: 'public') ?>">
     <?php
 }
 
