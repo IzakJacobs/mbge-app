@@ -82,11 +82,11 @@ renderHeader('📝 New Request', 'resident.php?action=menu');
       <a href="application_form.php?type=pet" class="menu-btn">
         <span class="icon">🐾</span>Register a Pet
       </a>
+      <a href="request_new.php?type=pet_visitor" class="menu-btn">
+        <span class="icon">🐕‍🦺</span>Register a Visitor's Pet <small style="font-size:.72rem;color:#888;">(max 7 days)</small>
+      </a>
       <a href="application_form.php?type=estate_agent" class="menu-btn">
         <span class="icon">🏢</span>Estate Agent Registration
-      </a>
-      <a href="request_new.php?type=pet_visitor" class="menu-btn">
-        <span class="icon">🐕‍🦺</span>Visitor's Pet <small style="font-size:.72rem;color:#888;">(max 7 days)</small>
       </a>
     </div>
     <p style="text-align:center;margin-top:16px;">
