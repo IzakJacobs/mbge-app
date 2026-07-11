@@ -3,15 +3,17 @@
  * permit_photo_upload.php — Photo upload + crop interstitial
  *
  * Flow: security.php "Print permit" button links here first
- *   1. Security uploads a photo file (any common image format)
+ *   1. Security uploads a photo file OR captures one from a webcam
  *   2. Photo is shown in a live cropper, locked to portrait ratio
  *   3. On "Approve & Print", the cropped image (base64 PNG) is POSTed
  *      to permit_card.php, permit_slip.php, or permit_label.php as `photo_data`
- *   4. Nothing is saved to disk or DB — fresh upload required every print
+ *   4. Nothing is saved to disk or DB — fresh upload/capture required every print
  *
  * Usage: permit_photo_upload.php?id=42&type=card
  *        permit_photo_upload.php?id=42&type=slip
  *        permit_photo_upload.php?id=42&type=label   (W103 A4 label sheet, pick 1 of 8 slots)
+ *
+ * Note: webcam capture uses getUserMedia(), which requires HTTPS (or localhost).
  */
 session_start();
 require_once __DIR__ . '/config.php';
@@ -87,6 +89,80 @@ $printAction = ($type === 'card') ? 'permit_card.php'
     border-radius: 6px;
     background: #fafbfc;
     font-size: 13px;
+  }
+
+  .btn-camera {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    white-space: nowrap;
+    font-size: 14px;
+    font-weight: bold;
+    padding: 14px 18px;
+    border-radius: 6px;
+    border: none;
+    background: #1a3c5e;
+    color: #fff;
+    cursor: pointer;
+  }
+  .btn-camera:hover { background: #142d47; }
+  .btn-camera:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .upload-toggle {
+    display: block;
+    text-align: center;
+    font-size: 12px;
+    color: #6a7c8c;
+    text-decoration: underline;
+    cursor: pointer;
+    margin-top: 10px;
+  }
+  .upload-toggle:hover { color: #1a3c5e; }
+
+  .file-fallback {
+    display: none;
+    margin-top: 10px;
+  }
+  .file-fallback.active { display: block; }
+
+  /* ── Webcam capture area ── */
+  .webcam-area {
+    display: none;
+    margin-top: 14px;
+  }
+  .webcam-area.active { display: block; }
+
+  .webcam-box {
+    position: relative;
+    width: 100%;
+    max-width: 320px;
+    margin: 0 auto;
+    aspect-ratio: 4 / 3;
+    background: #111;
+    overflow: hidden;
+    border-radius: 6px;
+  }
+  .webcam-box video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    transform: scaleX(-1); /* mirror preview only — captured frame is not mirrored */
+  }
+
+  .webcam-controls {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    margin-top: 12px;
+    max-width: 320px;
+    margin-left: auto;
+    margin-right: auto;
   }
 
   .cropper-area {
@@ -251,12 +327,27 @@ $printAction = ($type === 'card') ? 'permit_card.php'
     </div>
 
     <div class="step">
-      <div class="step-label">1. Select photo</div>
-      <input type="file" id="fileInput" accept="image/*">
-      <div class="hint">JPG, PNG, GIF, or WEBP. Will be cropped to a portrait shape.</div>
+      <div class="step-label">1. Capture photo</div>
+      <button type="button" class="btn-camera" id="webcamBtn">📷 Capture Photo</button>
+      <span class="upload-toggle" id="uploadToggle">or upload a file instead</span>
+
+      <div class="file-fallback" id="fileFallback">
+        <input type="file" id="fileInput" accept="image/*">
+        <div class="hint">JPG, PNG, GIF, or WEBP. Will be cropped to a portrait shape.</div>
+      </div>
+
+      <div class="webcam-area" id="webcamArea">
+        <div class="webcam-box">
+          <video id="webcamVideo" autoplay playsinline muted></video>
+        </div>
+        <div class="webcam-controls">
+          <button type="button" class="btn-secondary" id="webcamCancelBtn">Cancel</button>
+          <button type="button" class="btn-primary" id="webcamCaptureBtn">Capture</button>
+        </div>
+      </div>
     </div>
 
-    <div class="step cropper-area" id="cropperArea">
+    <div class="cropper-area" id="cropperArea">
       <div class="step-label">2. Adjust crop</div>
       <div class="cropper-box" id="cropperBox">
         <img id="cropperImg" src="" alt="">
@@ -310,16 +401,30 @@ $printAction = ($type === 'card') ? 'permit_card.php'
 </div>
 
 <script>
-const fileInput   = document.getElementById('fileInput');
-const cropperArea = document.getElementById('cropperArea');
-const cropperBox  = document.getElementById('cropperBox');
-const cropperImg  = document.getElementById('cropperImg');
-const zoomSlider  = document.getElementById('zoomSlider');
-const previewRow  = document.getElementById('previewRow');
-const previewImg  = document.getElementById('previewImg');
-const approveBtn  = document.getElementById('approveBtn');
-const photoField  = document.getElementById('photoDataField');
-const printForm   = document.getElementById('printForm');
+const fileInput       = document.getElementById('fileInput');
+const cropperArea     = document.getElementById('cropperArea');
+const cropperBox      = document.getElementById('cropperBox');
+const cropperImg      = document.getElementById('cropperImg');
+const zoomSlider      = document.getElementById('zoomSlider');
+const previewRow      = document.getElementById('previewRow');
+const previewImg      = document.getElementById('previewImg');
+const approveBtn      = document.getElementById('approveBtn');
+const photoField      = document.getElementById('photoDataField');
+const printForm       = document.getElementById('printForm');
+
+const webcamBtn        = document.getElementById('webcamBtn');
+const webcamArea       = document.getElementById('webcamArea');
+const webcamVideo      = document.getElementById('webcamVideo');
+const webcamCaptureBtn = document.getElementById('webcamCaptureBtn');
+const webcamCancelBtn  = document.getElementById('webcamCancelBtn');
+const uploadToggle     = document.getElementById('uploadToggle');
+const fileFallback     = document.getElementById('fileFallback');
+
+uploadToggle.addEventListener('click', () => {
+  const showing = fileFallback.classList.toggle('active');
+  uploadToggle.textContent = showing ? 'or capture from webcam instead' : 'or upload a file instead';
+  if (showing) stopWebcam();
+});
 
 const TARGET_W = <?= (int)$cropTargetW ?>;
 const TARGET_H = <?= (int)$cropTargetH ?>;
@@ -332,26 +437,84 @@ let scale = 1;
 let offsetX = 0, offsetY = 0;
 let boxW = 0, boxH = 0;
 let dragging = false, dragStartX = 0, dragStartY = 0, startOffX = 0, startOffY = 0;
+let webcamStream = null;
+
+// ── Shared entry point: both file upload and webcam capture feed into this ──
+function loadImageFromDataUrl(dataUrl) {
+  img = new Image();
+  img.onload = () => {
+    naturalW = img.naturalWidth;
+    naturalH = img.naturalHeight;
+    cropperImg.src = dataUrl;
+    cropperArea.classList.add('active');
+    previewRow.classList.remove('active');
+    approveBtn.disabled = true;
+    initCropper();
+  };
+  img.src = dataUrl;
+}
 
 fileInput.addEventListener('change', (e) => {
   const file = e.target.files[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = (ev) => {
-    img = new Image();
-    img.onload = () => {
-      naturalW = img.naturalWidth;
-      naturalH = img.naturalHeight;
-      cropperImg.src = ev.target.result;
-      cropperArea.classList.add('active');
-      previewRow.classList.remove('active');
-      approveBtn.disabled = true;
-      initCropper();
-    };
-    img.src = ev.target.result;
-  };
+  reader.onload = (ev) => loadImageFromDataUrl(ev.target.result);
   reader.readAsDataURL(file);
 });
+
+// ── Webcam capture ──
+webcamBtn.addEventListener('click', startWebcam);
+webcamCancelBtn.addEventListener('click', stopWebcam);
+webcamCaptureBtn.addEventListener('click', captureWebcamFrame);
+
+async function startWebcam() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    alert('Webcam capture is not supported in this browser. Use the file picker instead.');
+    return;
+  }
+  try {
+    webcamStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false
+    });
+    webcamVideo.srcObject = webcamStream;
+    webcamArea.classList.add('active');
+    webcamBtn.disabled = true;
+    fileFallback.classList.remove('active');
+    uploadToggle.textContent = 'or upload a file instead';
+  } catch (err) {
+    alert('Could not access webcam:\n\n' + err.message
+      + '\n\nCheck that a camera is connected and that this site has camera permission.');
+  }
+}
+
+function stopWebcam() {
+  if (webcamStream) {
+    webcamStream.getTracks().forEach(t => t.stop());
+    webcamStream = null;
+  }
+  webcamVideo.srcObject = null;
+  webcamArea.classList.remove('active');
+  webcamBtn.disabled = false;
+}
+
+function captureWebcamFrame() {
+  const vw = webcamVideo.videoWidth;
+  const vh = webcamVideo.videoHeight;
+  if (!vw || !vh) {
+    alert('Camera is still starting up — try again in a moment.');
+    return;
+  }
+  // Draw the raw video frame (NOT the mirrored CSS preview) to a canvas.
+  const canvas = document.createElement('canvas');
+  canvas.width  = vw;
+  canvas.height = vh;
+  canvas.getContext('2d').drawImage(webcamVideo, 0, 0, vw, vh);
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+
+  stopWebcam();
+  loadImageFromDataUrl(dataUrl);
+}
 
 function initCropper() {
   const rect = cropperBox.getBoundingClientRect();
@@ -459,7 +622,7 @@ function submitPermit() {
   photoField.value = canvas.toDataURL('image/jpeg', 0.88);
 
   if (!photoField.value || photoField.value.length < 100) {
-    alert('Photo data is missing. Please re-select the photo and try again.');
+    alert('Photo data is missing. Please re-select or re-capture the photo and try again.');
     return;
   }
 
@@ -500,11 +663,15 @@ function submitPermit() {
 }
 
 function closeOrRedirect() {
+  stopWebcam();
   window.close();
   setTimeout(() => {
     window.location.href = 'security.php?action=approvals';
   }, 150);
 }
+
+// Stop the camera if the user navigates away mid-capture
+window.addEventListener('beforeunload', stopWebcam);
 
 // Prevent accidental native submit (e.g. Enter key)
 printForm.addEventListener('submit', (e) => { e.preventDefault(); });
