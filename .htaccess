@@ -42,7 +42,7 @@ Options -Indexes
     Header always set X-Content-Type-Options "nosniff"
     Header always set X-XSS-Protection "1; mode=block"
     Header always set Referrer-Policy "strict-origin-when-cross-origin"
-    Header always set Permissions-Policy "camera=(), microphone=(), geolocation=()"
+    Header always set Permissions-Policy "camera=(self), microphone=(), geolocation=(self)"
 </IfModule>
 
 # ── Block common SQL injection patterns in query strings ──
