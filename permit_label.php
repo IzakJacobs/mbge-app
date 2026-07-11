@@ -20,6 +20,7 @@
 session_start();
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/vendor/autoload.php';
+require_once __DIR__ . '/smtp_mail.php';
 
 use Dompdf\Dompdf;
 use Dompdf\Options;
@@ -356,6 +357,32 @@ try {
     ]);
 } catch (Exception $e) {
     error_log('permit_print_log save failed: ' . $e->getMessage());
+}
+
+// ── Notify resident: security card issued ────────────────
+// NOTE: user-facing language says "card" — "label" is internal-only
+// terminology for the physical W103 sheet format.
+try {
+    $resEmail = $sp['resident_email'] ?? '';
+    if ($resEmail) {
+        $html = '<p>Dear ' . htmlspecialchars($sp['resident_name']) . ',</p>'
+              . '<p>This is to confirm that a security card has been issued to '
+              . '<strong>' . htmlspecialchars($sp['service_name']) . '</strong>'
+              . ' (' . htmlspecialchars($catLabel) . ') for access to your property '
+              . 'at Erf <strong>' . htmlspecialchars($sp['resident_erfno']) . '</strong>.</p>'
+              . '<p>Valid: ' . $validFrom . ' – ' . $validTo . '</p>'
+              . '<p>Access code: ' . htmlspecialchars($sp['unique_code']) . '</p>'
+              . '<p>If you did not request this, please contact the estate office immediately.</p>'
+              . '<p>Kind regards,<br>GEMB Estate Security</p>';
+
+        smtpSend(
+            $resEmail,
+            'Security card issued — ' . htmlspecialchars($sp['service_name']),
+            $html
+        );
+    }
+} catch (\Throwable $e) {
+    error_log('permit_label resident notification failed for SP #' . $sp['id'] . ': ' . $e->getMessage());
 }
 
 // ── Stream PDF to browser ─────────────────────────────────

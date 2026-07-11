@@ -9,6 +9,7 @@
 session_start();
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/vendor/autoload.php';
+require_once __DIR__ . '/smtp_mail.php';
 
 use Dompdf\Dompdf;
 use Dompdf\Options;
@@ -391,6 +392,30 @@ try {
 } catch (Exception $e) {
     // Never block permit printing on a log failure
     error_log('permit_print_log save failed: ' . $e->getMessage());
+}
+
+// ── Notify resident: access permit issued ─────────────────
+try {
+    $resEmail = $sp['resident_email'] ?? '';
+    if ($resEmail) {
+        $html = '<p>Dear ' . htmlspecialchars($sp['resident_name']) . ',</p>'
+              . '<p>This is to confirm that a temporary access permit has been issued to '
+              . '<strong>' . htmlspecialchars($sp['service_name']) . '</strong>'
+              . ' (' . htmlspecialchars($catLabel) . ') for access to your property '
+              . 'at Erf <strong>' . htmlspecialchars($sp['resident_erfno']) . '</strong>.</p>'
+              . '<p>Valid: ' . $validFrom . ' – ' . $validTo . '</p>'
+              . '<p>Access code: ' . htmlspecialchars($sp['unique_code']) . '</p>'
+              . '<p>If you did not request this, please contact the estate office immediately.</p>'
+              . '<p>Kind regards,<br>GEMB Estate Security</p>';
+
+        smtpSend(
+            $resEmail,
+            'Access permit issued — ' . htmlspecialchars($sp['service_name']),
+            $html
+        );
+    }
+} catch (\Throwable $e) {
+    error_log('permit_slip resident notification failed for SP #' . $sp['id'] . ': ' . $e->getMessage());
 }
 
 // ── Stream PDF to browser ─────────────────────────────────
