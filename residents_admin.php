@@ -340,6 +340,15 @@ if ($action === 'add') {
             setFlash('error', 'PIN must be exactly 4 digits.');
             header('Location: residents_admin.php?action=add'); exit;
         }
+        $email = trim($_POST['email'] ?? '');
+        if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            // Email is how residents receive their one-time code when
+            // logging in from an unrecognised device (see resident.php) —
+            // without one on file, that resident is locked out the first
+            // time they need it and has to call an administrator.
+            setFlash('error', 'A valid email address is required — it is used to send a one-time login code the first time this resident signs in from a new device.');
+            header('Location: residents_admin.php?action=add'); exit;
+        }
 
         $exists = db()->prepare(
             "SELECT id FROM residents
@@ -366,7 +375,7 @@ if ($action === 'add') {
                 trim($_POST['resident_name']),
                 trim($_POST['address']),
                 trim($_POST['phone'] ?? ''),
-                trim($_POST['email'] ?? ''),
+                $email,
                 password_hash($pin, PASSWORD_BCRYPT),
             ]);
             setFlash('success',
@@ -431,10 +440,16 @@ if ($action === 'add') {
                      pattern="27[0-9]{9}">
             </div>
             <div class="form-group">
-              <label>Email</label>
-              <input type="email" name="email" placeholder="optional">
+              <label>Email *</label>
+              <input type="email" name="email" required
+                     placeholder="name@example.com">
             </div>
           </div>
+          <small style="color:#888;display:block;margin:-8px 0 12px;">
+            Email is required — it's how this resident receives their
+            one-time login code the first time they sign in from a new
+            device or browser.
+          </small>
           <div class="form-group">
             <label>4-digit PIN *</label>
             <input type="password" name="pin" required
@@ -449,7 +464,7 @@ if ($action === 'add') {
           </div>
           <button type="submit" class="btn btn-primary btn-block"
                   id="submitBtn">
-            Register Primary Resident (Owner)
+            Register Primary Resident (Owner) — Email Required
           </button>
         </form>
         <div class="popia-notice">
@@ -488,7 +503,7 @@ if ($action === 'add') {
           } else {
             status.innerHTML   = '✅ Erf available.';
             status.style.color = '#155724';
-            btn.textContent    = 'Register Primary Resident (Owner)';
+            btn.textContent    = 'Register Primary Resident (Owner) — Email Required';
             btn.style.background = '';
             btn.style.color      = '';
             document.getElementById('addForm').action =
@@ -521,7 +536,7 @@ if ($action === 'add_occupant') {
     $erfno = strtoupper(trim($_GET['erf'] ?? ''));
 
     $existing = db()->prepare(
-        "SELECT occupant_code, resident_name, occupant_type
+        "SELECT occupant_code, resident_name, occupant_type, address
          FROM residents WHERE resident_erfno = ?
          ORDER BY occupant_code"
     );
@@ -544,6 +559,15 @@ if ($action === 'add_occupant') {
             header("Location: residents_admin.php?action=add_occupant&erf={$erfno}");
             exit;
         }
+        $email = trim($_POST['email'] ?? '');
+        if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            // Same reasoning as the primary-owner form: each occupant
+            // logs in on their own code (erf+letter) and needs an email
+            // on file to receive the new-device one-time code.
+            setFlash('error', 'A valid email address is required — it is used to send a one-time login code the first time this occupant signs in from a new device.');
+            header("Location: residents_admin.php?action=add_occupant&erf={$erfno}");
+            exit;
+        }
 
         try {
             db()->prepare("
@@ -559,7 +583,7 @@ if ($action === 'add_occupant') {
                 trim($_POST['resident_name']),
                 trim($_POST['address'] ?? $address),
                 trim($_POST['phone']   ?? ''),
-                trim($_POST['email']   ?? ''),
+                $email,
                 password_hash($pin, PASSWORD_BCRYPT),
             ]);
             setFlash('success',
@@ -625,6 +649,12 @@ if ($action === 'add_occupant') {
             <label>Address</label>
             <input type="text" name="address"
                    value="<?= htmlspecialchars($address) ?>">
+            <small style="color:#888;">
+              Pre-filled from the primary resident's address — all
+              occupants at Erf <?= htmlspecialchars($erfno) ?> share the
+              same address. Edit only if this occupant's address
+              genuinely differs.
+            </small>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
             <div class="form-group">
@@ -634,10 +664,16 @@ if ($action === 'add_occupant') {
                      pattern="27[0-9]{9}">
             </div>
             <div class="form-group">
-              <label>Email</label>
-              <input type="email" name="email" placeholder="optional">
+              <label>Email *</label>
+              <input type="email" name="email" required
+                     placeholder="name@example.com">
             </div>
           </div>
+          <small style="color:#888;display:block;margin:-8px 0 12px;">
+            Email is required — it's how this occupant receives their
+            one-time login code the first time they sign in from a new
+            device or browser.
+          </small>
           <div class="form-group">
             <label>4-digit PIN *</label>
             <input type="password" name="pin" required
@@ -651,7 +687,7 @@ if ($action === 'add_occupant') {
             </small>
           </div>
           <button type="submit" class="btn btn-primary btn-block">
-            Add Occupant <?= $erfno . $nextCode ?>
+            Add Occupant <?= $erfno . $nextCode ?> — Email Required
           </button>
         </form>
         <div class="popia-notice">
