@@ -1,0 +1,185 @@
+<?php
+
+namespace RSSSL\Security\WordPress\Two_Fa\Controllers;
+
+use Exception;
+use RSSSL\Security\WordPress\Two_Fa\Models\Rsssl_Request_Parameters;
+use RSSSL\Security\WordPress\Two_Fa\Providers\Rsssl_Provider_Loader;
+use RSSSL\Security\WordPress\Two_Fa\Providers\Rsssl_Two_Factor_Provider;
+use RSSSL\Security\WordPress\Two_Fa\Rsssl_Two_Factor_Settings;
+use WP_REST_Request;
+use WP_REST_Response;
+use WP_User;
+
+final class Rsssl_Base_Controller extends Rsssl_Abstract_Controller
+{
+    protected const METHOD = 'POST';
+    protected const FEATURE_ROUTE = '/two-fa';
+
+    protected string $namespace;
+
+
+    public function __construct($namespace, $version, $featureVersion)
+    {
+        parent::__construct($namespace, $version, $featureVersion);
+        add_action('rest_api_init', array($this, 'register_api_routes'));
+    }
+
+	/**
+	 * Registers the REST API routes for the base controller.
+	 *
+	 * @return void
+	 * @throws Exception
+	 */
+    public function register_api_routes(): void
+    {
+        $this->route($this->namespace,
+            self::METHOD,
+            'do_not_ask_again',
+            array($this, 'disable_two_fa_for_user'),
+	        null,
+            $this->build_args(array('user_id', 'login_nonce'), array('redirect_to'))
+        );
+        $this->route($this->namespace,
+            self::METHOD,
+            'skip_onboarding',
+            array($this, 'skip_onboarding'),
+	        null,
+            $this->build_args(array('user_id', 'login_nonce'), array('redirect_to'))
+        );
+    }
+
+    /**
+     * Disables two-factor authentication for the user.
+     *
+     * @param WP_REST_Request $request The REST request object.
+     *
+     * @return WP_REST_Response The REST response object.
+     */
+    public function disable_two_fa_for_user( WP_REST_Request $request ): WP_REST_Response {
+        $parameters = new Rsssl_Request_Parameters( $request );
+
+        try {
+           $user = $this->check_login_and_get_user($parameters->user_id, $parameters->login_nonce);
+        } catch (Exception $e) {
+            return new WP_REST_Response(['message' => $e->getMessage()], 403);
+        }
+
+		if ( $this->is_forced_user( $user->ID ) ) {
+			return new WP_REST_Response(
+				[
+					'error' => __( 'Two-Factor Authentication cannot be disabled for this account.', 'really-simple-ssl' ),
+				],
+				403
+			);
+		}
+
+		if ( $this->has_configured_provider( $user ) ) {
+			return new WP_REST_Response(
+				[
+					'error' => __( 'Two-Factor Authentication must be completed before it can be disabled.', 'really-simple-ssl' ),
+				],
+				403
+			);
+		}
+
+		// if the 2FA is not enabled for the user, we only handle the passkey meta key
+	    if ( ! (bool) rsssl_get_option( 'login_protection_enabled' ) ) {
+				// Remove the passkey meta key for the user.
+				update_user_meta( $user->ID, 'rsssl_passkey_configured', 'ignored' );
+		}
+        $loader = Rsssl_Provider_Loader::get_loader();
+        // We get all the available providers for the user.
+        foreach ($loader::get_providers() as $provider ) {
+            /**
+             * Set the user status to disable.
+             *
+             * @var Rsssl_Two_Factor_Provider $provider
+             */
+            $provider::set_user_status( $user->ID, 'disabled' );
+        }
+
+        // Finally we redirect the user to the redirect_to page.
+        return $this->authenticate_and_redirect( $user->ID, $parameters->redirect_to );
+    }
+
+    /**
+     * Skips the onboarding process for the user.
+     *
+     * @param WP_REST_Request $request The REST request object.
+     *
+     * @return WP_REST_Response The REST response object.
+     */
+    public function skip_onboarding( WP_REST_Request $request ): WP_REST_Response {
+        $parameters = new Rsssl_Request_Parameters( $request );
+
+        try {
+            $user = $this->check_login_and_get_user($parameters->user_id, $parameters->login_nonce);
+        } catch (Exception $e) {
+            return new WP_REST_Response(['message' => $e->getMessage()], 403);
+        }
+
+		if ( ! $this->can_user_skip_onboarding( $user ) ) {
+			return new WP_REST_Response(
+				[
+					'error' => __( 'Two-Factor Authentication setup is required for this account.', 'really-simple-ssl' ),
+				],
+				403
+			);
+		}
+
+	        return $this->authenticate_and_redirect( $user->ID, $parameters->redirect_to );
+	    }
+
+	/**
+	 * Check if the user has an enabled provider that is forced for their role.
+	 *
+	 * @param int $user_id The user ID.
+	 *
+	 * @return bool
+	 */
+	private function is_forced_user( int $user_id ): bool {
+		$user = get_userdata( $user_id );
+		if ( ! $user instanceof WP_User ) {
+			return false;
+		}
+
+		$loader = Rsssl_Provider_Loader::get_loader();
+		$login_protection_enabled = (bool) rsssl_get_option( 'login_protection_enabled' );
+
+		foreach ( $loader::available_providers() as $method => $provider ) {
+			if ( ! $this->is_provider_available_for_current_login_mode( $method, $login_protection_enabled ) ) {
+				continue;
+			}
+
+			if ( ! $provider::is_enabled( $user ) ) {
+				continue;
+			}
+
+			if ( 'forced' === Rsssl_Two_Factor_Settings::get_role_status( $method, $user_id ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Check if onboarding can be skipped for the given user.
+	 *
+	 * @param WP_User $user The user object.
+	 *
+	 * @return bool
+	 */
+	private function can_user_skip_onboarding( WP_User $user ): bool {
+		if ( $this->has_configured_provider( $user ) ) {
+			return false;
+		}
+
+		if ( ! $this->is_forced_user( $user->ID ) ) {
+			return true;
+		}
+
+		return false !== Rsssl_Two_Factor_Settings::is_user_in_grace_period( $user );
+	}
+}

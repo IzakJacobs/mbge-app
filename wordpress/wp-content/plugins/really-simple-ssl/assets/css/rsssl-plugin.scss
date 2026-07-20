@@ -1,0 +1,96 @@
+/*
+  This was created for styling the plugin overview page for vulnerable plugins.
+ */
+@import "variables.scss";
+
+.rsssl-btn-vulnerable {
+  display: inline-block;
+  text-decoration: none;
+  font-size: var(--rsp-fs-100);
+  line-height: 2.15384615;
+  min-height: 30px;
+  margin: 0;
+  padding: 4px 8px;
+  min-width: 100px;
+  text-align: center;
+  cursor: pointer;
+  font-weight: 600;
+  -webkit-appearance: none;
+  border-radius: var(--rsp-border-radius-xs);
+  white-space: nowrap;
+  box-sizing: border-box;
+  background-color: var(--rsp-yellow);
+  color: var(--rsp-black);
+  border-color: var(--rsp-yellow);
+  &:hover {
+    text-decoration: underline;
+  }
+
+  &.rsssl-critical {
+    background-color: var(--rsp-red);
+    color: var(--rsp-white);
+    border-color: var(--rsp-red);
+  }
+
+  &.rsssl-high {
+    background-color: var(--rsp-red);
+    color: var(--rsp-white);
+    border-color: var(--rsp-red);
+  }
+
+  &.rsssl-medium {
+    border-color: var(--rsp-yellow);
+    color: var(--rsp-black);
+    background-color: var(--rsp-yellow);
+  }
+}
+
+.rsssl-theme-vuln-block {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: var(--rsp-yellow-faded);
+  border-radius: var(--rsp-border-radius-xs);
+  border: 1px solid var(--rsp-yellow);
+  font-size: var(--rsp-fs-200);
+  color: var(--rsp-black);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  position: relative;
+  z-index: 1;
+}
+
+.theme-actions {
+  z-index: 2;
+}
+
+.theme.rsssl-vulnerable .theme-actions {
+  top: auto !important;
+  bottom: 36px !important;
+}
+
+
+/* Use severity for color accents */
+.rsssl-theme-vuln-block.rsssl-medium {
+  border-color: var(--rsp-yellow);
+  background: var(--rsp-yellow-faded);
+}
+
+.rsssl-theme-vuln-block.rsssl-high {
+  border-color: var(--rsp-red-faded);
+  background: #ffe3e3;
+}
+
+.rsssl-theme-vuln-block.rsssl-critical {
+  border-color: var(--rsp-red);
+  background: #ffd6d6;
+}
+
+/* Make the text look clean */
+.rsssl-theme-vuln-block .rsssl-theme-vuln-text {
+  font-size: var(--rsp-fs-200);
+  line-height: 1.4;
+  color: var(--rsp-black);
+  white-space: normal;
+}

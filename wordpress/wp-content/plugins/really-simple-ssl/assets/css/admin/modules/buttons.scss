@@ -1,0 +1,142 @@
+.rsssl {
+  .rsssl-field-button {
+    button.button {
+      display:flex;
+    }
+  }
+  a.button, button.button, input.button, span.button {
+    font-size: var(--rsp-fs-300);
+    font-weight: 400;
+    transition: all 0.3s ease;
+    min-height: 10px;
+
+    &.button-secondary, &.button-default {
+      background: transparent;
+    }
+
+    .rsssl-icon {
+      padding-top: 7px;
+      padding-left: 7px;
+    }
+
+    &.button-black {
+      border: 1px solid var(--rsp-black);
+      background: var(--rsp-black);
+      color: var(--rsp-text-color-white);
+
+      //&:hover, &:focus, &:active {
+      //  box-shadow: 0 0 0 1px #fff, 0 0 0 3px var(--rsp-black);
+      //}
+    }
+
+    &.button-tertiary, &.button-red {
+      border: 0 solid transparent;
+      background: var(--rsp-red);
+      color: var(--rsp-text-color-white);
+
+      //&:hover, &:focus, &:active {
+      //  box-shadow: 0 0 0 1px #fff, 0 0 0 3px var(--rsp-red);
+      //  background: var(--rsp-red);
+      //  color: var(--rsp-text-color-white);
+      //}
+    }
+
+    &.button-primary {
+      // We disable all hover effects for the primary button as wel as active and focus
+        // This is to ensure that the primary button is always the same color
+        // and does not change on hover, focus or active
+        &:hover, &:focus, &:active {
+          box-shadow: none;
+        }
+    }
+
+    &.button-secondary {
+      // We disable all hover effects for the secondary button as wel as active and focus
+        // This is to ensure that the secondary button is always the same color
+        // and does not change on hover, focus or active
+        &:hover, &:focus, &:active {
+          box-shadow: none;
+        }
+    }
+  }
+}
+
+.rsssl {
+  a.rsssl-button-small, button.rsssl-button-small, input.rsssl-button-small {
+    font-size: var(--rsp-fs-100);
+    font-weight: 300;
+    min-height: auto;
+  }
+
+  //on the dashboard, keep a minimum distance between two buttons
+  .rsssl-button-small + .rsssl-button-small {
+    margin-left: 10px;
+  }
+
+
+  /* Documents overview */
+  .rsssl-shortcode {
+    right: 10000px;
+    position: absolute;
+    background-color: #fff;
+    padding: 0;
+    white-space: nowrap;
+  }
+
+  .shortcode {
+    cursor: pointer;
+  }
+
+  .rsssl-action-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--rsp-spacing-xs);
+    width: 100%;
+  }
+
+  .rsssl-action-buttons__inner {
+    display: flex;
+    flex: 0 1 auto;
+    overflow: visible;
+  }
+
+  .rsssl-action-buttons__button,
+  .rsssl-action-buttons > button,
+  .rsssl-action-buttons__inner > button {
+    align-items: center;
+    display: inline-flex;
+    height: auto;
+    justify-content: center;
+    line-height: 1.4;
+    min-height: 30px;
+    min-width: max-content;
+    text-align: center;
+    white-space: nowrap;
+    width: auto;
+  }
+
+  /**
+    For the mixed content scan we need to do some extra tweaking
+   */
+  .rsssl-mixed-content-scan {
+    .rsssl-grid-item-content-footer {
+      margin-left: 0;
+      margin-right: 0;
+      padding-left: 25px;
+
+      .button {
+        display: block;
+        margin-right: 0;
+        margin-left: 0;
+      }
+
+      label {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+    }
+  }
+}
