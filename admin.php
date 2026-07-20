@@ -1027,6 +1027,7 @@ if ($action === 'add_guard') {
             <td>
               <form method="POST" onsubmit="return confirm('Delete this guard?')"
                     style="display:inline">
+                <?= csrfField() ?>
                 <input type="hidden" name="form_action" value="delete">
                 <input type="hidden" name="uid" value="<?= $g['id'] ?>">
                 <button class="btn btn-danger btn-sm">Delete</button>
