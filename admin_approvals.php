@@ -473,9 +473,18 @@ renderHeader($cfg['icon'] . ' ' . htmlspecialchars($detail['app_ref']), 'admin_a
         <td style="font-family:monospace;"><strong><?= htmlspecialchars($b['unique_code']) ?></strong></td>
         <td>
           <?php if (!$b['expired']): ?>
-          <a href="permit_photo_upload.php?id=<?= (int)$b['id'] ?>&type=<?= $b['permit_type'] === 'card' ? 'card' : 'slip' ?>"
+          <?php
+            // "Card" permits are wearable plastic and are actually printed
+            // via the W103 label sheet, not the old permit_card.php path —
+            // see security.php's approved-SP print button, which this
+            // mirrors. The stored permit_type value stays 'card' (no
+            // schema change); only the print destination is 'label'.
+            $printType  = ($b['permit_type'] === 'card') ? 'label' : 'slip';
+            $printLabel = ($b['permit_type'] === 'card') ? 'Print Card' : 'Print Slip';
+          ?>
+          <a href="permit_photo_upload.php?id=<?= (int)$b['id'] ?>&type=<?= $printType ?>"
              target="_blank" class="btn btn-primary btn-sm">
-            🖨️ <?= $b['permit_type'] === 'card' ? 'Print Card' : 'Print Slip' ?>
+            🖨️ <?= $printLabel ?>
           </a>
           <?php else: ?>
           <span class="badge badge-muted">revoked</span>
