@@ -168,7 +168,7 @@ if ($found && !empty($found['email']) && !$sendOk) {
     exit;
 }
 
-    // ── Step 2: verify the OTP ──
+    } // ── Step 2: verify the OTP ──
     elseif ($step === 'otp') {
         $otp   = preg_replace('/\D/', '', trim($_POST['otp'] ?? ''));
         $email = $_SESSION['fp_email'] ?? '';
