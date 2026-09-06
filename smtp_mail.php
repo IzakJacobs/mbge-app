@@ -204,19 +204,8 @@ function smtpSend(
 
     } catch (MailerException $e) {
 
-    $debugMessage =
-        date('Y-m-d H:i:s') .
-        ' SMTP failure: ' .
-        $mail->ErrorInfo .
-        ' | ' .
-        $e->getMessage() .
-        PHP_EOL;
-
     error_log(
-        $debugMessage,
-        3,
-        dirname(__DIR__) .
-        '/gemb_private/smtp_debug.log'
+        'smtpSend authenticated SMTP transmission failed'
     );
 
     return false;
