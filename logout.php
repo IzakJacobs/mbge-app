@@ -22,7 +22,7 @@ require_once __DIR__ . '/config.php';
 
 if (session_status() === PHP_SESSION_NONE) session_start();
 // ── Step 1: Determine redirect BEFORE destroying session ──
-$redirect = 'AS-menu.php';                 // safe estate-neutral fallback
+$redirect = 'https://www.google.co.za/index.html';                 // safe estate-neutral fallback
 if      (!empty($_SESSION['admin_id']))    $redirect = 'admin.php?action=login';
 elseif  (!empty($_SESSION['resident_id'])) $redirect = 'resident.php?action=login';
 elseif  (!empty($_SESSION['guard_id']))    $redirect = 'guard.php?action=login';
