@@ -204,14 +204,21 @@ function smtpSend(
 
     } catch (MailerException $e) {
 
-        /*
-         * Deliberately do not include recipient email
-         * or SMTP password in application logs.
-         */
-        error_log(
-            'smtpSend authenticated SMTP transmission failed'
-        );
+    $debugMessage =
+        date('Y-m-d H:i:s') .
+        ' SMTP failure: ' .
+        $mail->ErrorInfo .
+        ' | ' .
+        $e->getMessage() .
+        PHP_EOL;
 
-        return false;
-    }
+    error_log(
+        $debugMessage,
+        3,
+        dirname(__DIR__) .
+        '/gemb_private/smtp_debug.log'
+    );
+
+    return false;
+}
 }

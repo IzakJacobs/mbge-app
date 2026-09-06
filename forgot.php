@@ -127,13 +127,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $_SESSION['fp_identifier'] = $identifier;
         $_SESSION['fp_otp_tries']  = 0;
 
-        if ($found && !empty($found['email'])) {
-            generateEmailOtp($found['email']);
-        }
+        $sendOk = false;
 
-        $_SESSION['fp_step'] = 'otp';
-        header('Location: forgot.php?role=' . urlencode($role)); exit;
-    }
+if ($found && !empty($found['email'])) {
+    $sendOk = generateEmailOtp(
+        (string)$found['email']
+    );
+}
+
+/*
+ * Preserve generic behaviour for unknown accounts,
+ * but do not put a real account onto a dead OTP screen
+ * when delivery failed.
+ */
+if ($found && !empty($found['email']) && !$sendOk) {
+
+    error_log(
+        'GEMB forgot-password OTP delivery failed'
+    );
+
+    $error =
+        'Unable to send the verification code. ' .
+        'Please wait briefly and try again.';
+
+    /*
+     * Stay on identify step.
+     */
+    $_SESSION['fp_step'] = 'identify';
+    $step = 'identify';
+
+} else {
+
+    $_SESSION['fp_step'] = 'otp';
+
+    header(
+        'Location: forgot.php?role=' .
+        urlencode($role)
+    );
+
+    exit;
+}
 
     // ── Step 2: verify the OTP ──
     elseif ($step === 'otp') {
