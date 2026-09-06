@@ -118,6 +118,11 @@ function otpCanSend(
     string $subjectKey,
     string $purpose
 ): bool {
+    $cutoff = date(
+        'Y-m-d H:i:s',
+        time() - (OTP_SEND_WINDOW_MINS * 60)
+    );
+
     $stmt = db()->prepare("
         SELECT
             COUNT(*) AS send_count,
@@ -125,16 +130,13 @@ function otpCanSend(
         FROM auth_otp_tokens
         WHERE subject_key = ?
           AND purpose = ?
-          AND created_at >= DATE_SUB(
-                NOW(),
-                INTERVAL ? MINUTE
-          )
+          AND created_at >= ?
     ");
 
     $stmt->execute([
         $subjectKey,
         $purpose,
-        OTP_SEND_WINDOW_MINS,
+        $cutoff,
     ]);
 
     $row = $stmt->fetch();
@@ -151,11 +153,15 @@ function otpCanSend(
     }
 
     if (!empty($row['last_sent'])) {
-        $seconds =
-            time() -
-            strtotime($row['last_sent']);
+        $lastSent = strtotime(
+            $row['last_sent']
+        );
 
-        if ($seconds < OTP_MIN_RESEND_SECONDS) {
+        if (
+            $lastSent !== false &&
+            (time() - $lastSent) <
+                OTP_MIN_RESEND_SECONDS
+        ) {
             return false;
         }
     }
@@ -420,9 +426,12 @@ function otpVerify(
 */
 
 function generateEmailOtp(
-    string $email
+    string $email,
+    string $purpose = 'admin_login'
 ): bool {
-    $email = strtolower(trim($email));
+    $email = strtolower(
+        trim($email)
+    );
 
     if (!filter_var(
         $email,
@@ -431,7 +440,24 @@ function generateEmailOtp(
         return false;
     }
 
-    $purpose = 'admin_login';
+    $allowedPurposes = [
+        'admin_login',
+        'password_reset_admin',
+        'password_reset_security',
+        'password_reset_resident',
+    ];
+
+    if (!in_array(
+        $purpose,
+        $allowedPurposes,
+        true
+    )) {
+        error_log(
+            'GEMB OTP rejected: invalid email OTP purpose'
+        );
+
+        return false;
+    }
 
     $subjectKey = otpSubjectKey(
         'email',
@@ -444,38 +470,44 @@ function generateEmailOtp(
     );
 
     if ($otp === null) {
-    error_log(
-        'GEMB OTP DEBUG: issuance blocked by resend/rate limit'
-    );
+        return false;
+    }
 
-    return false;
-}
+    $isPasswordReset =
+        str_starts_with(
+            $purpose,
+            'password_reset_'
+        );
 
-    $subject =
-        'GEMB Access Control - Your Login Code';
+    if ($isPasswordReset) {
+        $subject =
+            'GEMB Access Control - Password Reset Code';
 
-    $body =
-        "GEMB Access Control\n\n" .
-        "Your login code: {$otp}\n\n" .
-        "Valid for 5 minutes. " .
-        "Do not share this code.\n\n" .
-        "GEMB HOA | POPIA Act 4 of 2013";
+        $body =
+            "GEMB Access Control\n\n" .
+            "Your password reset code: {$otp}\n\n" .
+            "Valid for 5 minutes. " .
+            "Do not share this code.\n\n" .
+            "If you did not request this reset, " .
+            "you can ignore this message.\n\n" .
+            "GEMB HOA";
+    } else {
+        $subject =
+            'GEMB Access Control - Your Login Code';
+
+        $body =
+            "GEMB Access Control\n\n" .
+            "Your login code: {$otp}\n\n" .
+            "Valid for 5 minutes. " .
+            "Do not share this code.\n\n" .
+            "GEMB HOA";
+    }
 
     $sent = sendEmail(
         $email,
         $subject,
         $body
     );
-    
-    if (!$sent) {
-    error_log(
-        'GEMB OTP DEBUG: OTP created but SMTP send failed'
-    );
-} else {
-    error_log(
-        'GEMB OTP DEBUG: SMTP send reported success'
-    );
-}
 
     /*
      * A failed transmission must not leave
@@ -495,6 +527,61 @@ function generateEmailOtp(
     }
 
     return $sent;
+}
+
+
+function verifyEmailOtpDetailed(
+    string $email,
+    string $otp,
+    string $purpose = 'admin_login'
+): array {
+    $allowedPurposes = [
+        'admin_login',
+        'password_reset_admin',
+        'password_reset_security',
+        'password_reset_resident',
+    ];
+
+    if (!in_array(
+        $purpose,
+        $allowedPurposes,
+        true
+    )) {
+        return [
+            'ok' => false,
+            'reason' => 'invalid',
+            'attempts_remaining' => 0,
+        ];
+    }
+
+    $subjectKey = otpSubjectKey(
+        'email',
+        strtolower(
+            trim($email)
+        )
+    );
+
+    return otpVerify(
+        $subjectKey,
+        $purpose,
+        $otp
+    );
+}
+
+
+/**
+ * Compatibility wrapper for existing callers.
+ */
+function verifyEmailOtp(
+    string $email,
+    string $otp,
+    string $purpose = 'admin_login'
+): bool {
+    return verifyEmailOtpDetailed(
+        $email,
+        $otp,
+        $purpose
+    )['ok'];
 }
 
 

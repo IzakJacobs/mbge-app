@@ -19,7 +19,8 @@
 // ============================================================
 require_once __DIR__ . '/layout.php';
 require_once __DIR__ . '/twilio_helper.php';
-if (session_status() === PHP_SESSION_NONE) session_start();
+
+ensureSession();
 
 // ── Role configuration (fixed whitelist — never from user input) ──
 $ROLES = [
@@ -27,7 +28,7 @@ $ROLES = [
         'table'    => 'admins',
         'pwcol'    => 'password',
         'stamp'    => true,            // track password_changed_at
-        'credKind' => 'password',      // min 8 chars
+        'credKind' => 'password',      // min 12 chars
         'title'    => 'Administrator',
         'accent'   => 'admin',
         'icon'     => '⚙️',
@@ -202,8 +203,8 @@ if ($found && !empty($found['email']) && !$sendOk) {
             $step  = 'identify';
             $_SESSION['fp_step'] = 'identify';
         } else {
-            $new = trim($_POST['new_cred'] ?? '');
-            $con = trim($_POST['confirm_cred'] ?? '');
+            $new = (string)($_POST['new_cred'] ?? '');
+            $con = (string)($_POST['confirm_cred'] ?? '');
 
             $valid = true;
             if ($cfg['credKind'] === 'pin') {
@@ -211,8 +212,8 @@ if ($found && !empty($found['email']) && !$sendOk) {
                     $error = 'PIN must be exactly 4 digits.'; $valid = false;
                 }
             } else {
-                if (strlen($new) < 8) {
-                    $error = 'Password must be at least 8 characters.'; $valid = false;
+                if (strlen($new) < 12) {
+                    $error = 'Password must be at least 12 characters.'; $valid = false;
                 }
             }
             if ($valid && $new !== $con) {
@@ -221,9 +222,43 @@ if ($found && !empty($found['email']) && !$sendOk) {
             }
 
             if ($valid) {
-                $sql = "UPDATE {$cfg['table']} SET {$cfg['pwcol']} = ?, device_token = NULL"
-                     . ($cfg['stamp'] ? ", password_changed_at = NOW()" : "")
-                     . " WHERE id = ?";
+               if ($role === 'admin') {
+
+    $sql =
+        "UPDATE admins
+         SET password = ?,
+             device_token = NULL,
+             device_token_expires_at = NULL,
+             active_session_token = NULL,
+             password_changed_at = NOW()
+         WHERE id = ?";
+
+} elseif ($role === 'security') {
+
+    $sql =
+        "UPDATE security_users
+         SET pin = ?,
+             device_token = NULL,
+             password_changed_at = NOW()
+         WHERE id = ?";
+
+} else {
+
+    $sql =
+        "UPDATE residents
+         SET pin_hash = ?,
+             device_token = NULL
+         WHERE id = ?";
+}
+
+db()->prepare($sql)->execute([
+    password_hash(
+        $new,
+        PASSWORD_DEFAULT
+    ),
+    $id,
+]);
+                     
                 db()->prepare($sql)->execute([
                     password_hash($new, PASSWORD_BCRYPT),
                     $id,
@@ -346,14 +381,14 @@ pageHeader('Forgot Password', $cfg['accent']);
         </div>
         <?php else: ?>
         <div class="form-group">
-          <label>New Password (min 8 characters)</label>
+          <label>New Password (min 12 characters)</label>
           <input type="password" name="new_cred" required autofocus
-                 autocomplete="new-password" minlength="8">
+                 autocomplete="new-password" minlength="12">
         </div>
         <div class="form-group">
           <label>Confirm Password</label>
           <input type="password" name="confirm_cred" required
-                 autocomplete="new-password" minlength="8">
+                 autocomplete="new-password" minlength="12">
         </div>
         <?php endif; ?>
         <button type="submit" class="btn btn-primary btn-block">
