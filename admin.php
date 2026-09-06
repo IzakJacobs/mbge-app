@@ -12,6 +12,59 @@ if (session_status() === PHP_SESSION_NONE) session_start();
 
 $action = $_GET['action'] ?? 'login';
 
+const ADMIN_DEVICE_COOKIE =
+    'gemb_admin_device';
+
+const ADMIN_DEVICE_LIFETIME =
+    30 * 24 * 60 * 60;
+
+
+function adminSetDeviceCookie(
+    string $token
+): void {
+    setcookie(
+        ADMIN_DEVICE_COOKIE,
+        $token,
+        [
+            'expires' =>
+                time() +
+                ADMIN_DEVICE_LIFETIME,
+
+            'path' => '/',
+            'domain' => '',
+            'secure' => true,
+            'httponly' => true,
+            'samesite' => 'Strict',
+        ]
+    );
+}
+
+
+function adminClearDeviceCookie(): void
+{
+    setcookie(
+        ADMIN_DEVICE_COOKIE,
+        '',
+        [
+            'expires' => time() - 42000,
+            'path' => '/',
+            'domain' => '',
+            'secure' => true,
+            'httponly' => true,
+            'samesite' => 'Strict',
+        ]
+    );
+}
+
+
+function adminNewDeviceToken(): string
+{
+    return bin2hex(
+        random_bytes(32)
+    );
+}
+
+
 // ── LOGIN ─────────────────────────────────────────────────
 if ($action === 'login') {
 

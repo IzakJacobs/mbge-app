@@ -1,142 +1,607 @@
 <?php
 /**
- * twilio_helper.php — GEMB notifications and OTP
+ * twilio_helper.php
  *
- * All email is sent via smtpSend() in smtp_mail.php (SMTP AUTH).
- * SMTP credentials are defined as constants in config.php.
+ * GEMB notification and OTP handling.
+ *
+ * Requires:
+ *   config.php
+ *   smtp_mail.php
+ *
+ * Database table:
+ *   auth_otp_tokens
  */
 
-// ── Ensure OTP table exists ───────────────────────────────────────────────────
-function ensureOtpTable(): void {
-    db()->exec("CREATE TABLE IF NOT EXISTS otp_tokens (
-        id         INT AUTO_INCREMENT PRIMARY KEY,
-        phone      VARCHAR(20)  NOT NULL,
-        otp        CHAR(6)      NOT NULL,
-        expires_at DATETIME     NOT NULL,
-        used       TINYINT(1)   DEFAULT 0,
-        created_at TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_phone_otp (phone, otp)
-    )");
-}
+define('OTP_LIFETIME_SECONDS', 300);
 
-// ── Normalise a SA phone number to E.164 (27XXXXXXXXX) ───────────────────────
-function normalisePhone(string $phone): string {
-    $phone = preg_replace('/\D/', '', $phone);
-    if (substr($phone, 0, 1) === '0')  $phone = '27' . substr($phone, 1);
-    if (substr($phone, 0, 2) !== '27') $phone = '27' . $phone;
+define('OTP_MAX_ATTEMPTS', 5);
+
+define('OTP_SEND_WINDOW_MINS', 15);
+define('OTP_MAX_SENDS_PER_WINDOW', 3);
+define('OTP_MIN_RESEND_SECONDS', 60);
+
+
+/*
+|--------------------------------------------------------------------------
+| Phone handling
+|--------------------------------------------------------------------------
+*/
+
+function normalisePhone(string $phone): string
+{
+    $phone = preg_replace('/\D+/', '', $phone);
+
+    if ($phone === '') {
+        return '';
+    }
+
+    if (str_starts_with($phone, '0')) {
+        $phone = '27' . substr($phone, 1);
+    }
+
+    if (!str_starts_with($phone, '27')) {
+        $phone = '27' . $phone;
+    }
+
     return $phone;
 }
 
-// ── Send email via SMTP AUTH (smtp_mail.php / smtpSend) ──────────────────────
-function sendEmail(string $toEmail, string $subject, string $body): bool {
-    if (!$toEmail) {
-        error_log('GEMB Email: no recipient address');
+
+/*
+|--------------------------------------------------------------------------
+| Email transport
+|--------------------------------------------------------------------------
+*/
+
+function sendEmail(
+    string $toEmail,
+    string $subject,
+    string $body
+): bool {
+    $toEmail = trim($toEmail);
+
+    if (!filter_var(
+        $toEmail,
+        FILTER_VALIDATE_EMAIL
+    )) {
+        error_log(
+            'GEMB email rejected: invalid recipient'
+        );
+
         return false;
     }
+
     require_once __DIR__ . '/smtp_mail.php';
-    $html = '<html><body style="font-family:Arial,sans-serif;max-width:500px;margin:0 auto;padding:20px;">'
-          . nl2br(htmlspecialchars($body, ENT_QUOTES, 'UTF-8'))
-          . '</body></html>';
-    return smtpSend($toEmail, $subject, $html);
-}
 
-// ── Generate and send a 6-digit OTP via email ─────────────────────────────────
-function generateOtp(string $phone, string $email): bool {
-    ensureOtpTable();
-    $phone = normalisePhone($phone);
+    $html =
+        '<html><body ' .
+        'style="font-family:Arial,sans-serif;' .
+        'max-width:500px;margin:0 auto;padding:20px;">' .
+        nl2br(
+            htmlspecialchars(
+                $body,
+                ENT_QUOTES | ENT_SUBSTITUTE,
+                'UTF-8'
+            )
+        ) .
+        '</body></html>';
 
-    db()->prepare("UPDATE otp_tokens SET used=1 WHERE phone=? AND used=0")
-        ->execute([$phone]);
-
-    $otp     = str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT);
-    $expires = date('Y-m-d H:i:s', time() + 300);
-
-    db()->prepare("INSERT INTO otp_tokens (phone, otp, expires_at) VALUES (?, ?, ?)")
-        ->execute([$phone, $otp, $expires]);
-
-    $subject = 'GEMB Access Control - Your Login Code';
-    $body    = "GEMB Access Control\n\n"
-             . "Your login code: {$otp}\n\n"
-             . "Valid for 5 minutes. Do not share this code.\n\n"
-             . "GEMB HOA | POPIA Act 4 of 2013";
-
-    return sendEmail($email, $subject, $body);
-}
-
-// ── Verify an OTP ─────────────────────────────────────────────────────────────
-function verifyOtp(string $phone, string $otp): bool {
-    ensureOtpTable();
-    $phone = normalisePhone($phone);
-    $otp   = preg_replace('/\D/', '', trim($otp));
-
-    $stmt = db()->prepare(
-        "SELECT id FROM otp_tokens
-         WHERE phone=? AND otp=? AND used=0 AND expires_at > NOW()
-         ORDER BY id DESC LIMIT 1"
+    return smtpSend(
+        $toEmail,
+        $subject,
+        $html
     );
-    $stmt->execute([$phone, $otp]);
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| OTP internals
+|--------------------------------------------------------------------------
+*/
+
+function otpCreateCode(): string
+{
+    return str_pad(
+        (string)random_int(0, 999999),
+        6,
+        '0',
+        STR_PAD_LEFT
+    );
+}
+
+
+/**
+ * Return whether another OTP may be issued.
+ */
+function otpCanSend(
+    string $subjectKey,
+    string $purpose
+): bool {
+    $stmt = db()->prepare("
+        SELECT
+            COUNT(*) AS send_count,
+            MAX(created_at) AS last_sent
+        FROM auth_otp_tokens
+        WHERE subject_key = ?
+          AND purpose = ?
+          AND created_at >= DATE_SUB(
+                NOW(),
+                INTERVAL ? MINUTE
+          )
+    ");
+
+    $stmt->execute([
+        $subjectKey,
+        $purpose,
+        OTP_SEND_WINDOW_MINS,
+    ]);
+
     $row = $stmt->fetch();
 
-    if (!$row) return false;
+    if (!$row) {
+        return true;
+    }
 
-    db()->prepare("UPDATE otp_tokens SET used=1 WHERE id=?")->execute([$row['id']]);
-    return true;
-}
-
-// ── EMAIL-KEYED OTP (for admins / email-first accounts) ───────────────────────
-// Keys the OTP on a hash of the email address (fits VARCHAR(20), never
-// collides with a real phone number because it starts with 'E').
-function emailOtpKey(string $email): string {
-    return 'E' . substr(md5(strtolower(trim($email))), 0, 15); // 16 chars
-}
-
-function generateEmailOtp(string $email): bool {
-    ensureOtpTable();
-    $email = trim($email);
-    if ($email === '') {
-        error_log('GEMB Email OTP: no email address supplied');
+    if (
+        (int)$row['send_count'] >=
+        OTP_MAX_SENDS_PER_WINDOW
+    ) {
         return false;
     }
-    $key = emailOtpKey($email);
 
-    db()->prepare("UPDATE otp_tokens SET used=1 WHERE phone=? AND used=0")
-        ->execute([$key]);
+    if (!empty($row['last_sent'])) {
+        $seconds =
+            time() -
+            strtotime($row['last_sent']);
 
-    $otp     = str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT);
-    $expires = date('Y-m-d H:i:s', time() + 300);
+        if ($seconds < OTP_MIN_RESEND_SECONDS) {
+            return false;
+        }
+    }
 
-    db()->prepare("INSERT INTO otp_tokens (phone, otp, expires_at) VALUES (?, ?, ?)")
-        ->execute([$key, $otp, $expires]);
-
-    $subject = 'GEMB Access Control - Your Login Code';
-    $body    = "GEMB Access Control\n\n"
-             . "Your login code: {$otp}\n\n"
-             . "Valid for 5 minutes. Do not share this code.\n\n"
-             . "GEMB HOA | POPIA Act 4 of 2013";
-
-    return sendEmail($email, $subject, $body);
-}
-
-function verifyEmailOtp(string $email, string $otp): bool {
-    ensureOtpTable();
-    $key = emailOtpKey($email);
-    $otp = preg_replace('/\D/', '', trim($otp));
-
-    $stmt = db()->prepare(
-        "SELECT id FROM otp_tokens
-         WHERE phone=? AND otp=? AND used=0 AND expires_at > NOW()
-         ORDER BY id DESC LIMIT 1"
-    );
-    $stmt->execute([$key, $otp]);
-    $row = $stmt->fetch();
-
-    if (!$row) return false;
-
-    db()->prepare("UPDATE otp_tokens SET used=1 WHERE id=?")->execute([$row['id']]);
     return true;
 }
 
-// ── Resident entry notification ───────────────────────────────────────────────
+
+/**
+ * Generate an OTP and store only its HMAC.
+ */
+function otpIssue(
+    string $subjectKey,
+    string $purpose
+): ?string {
+    if (!otpCanSend(
+        $subjectKey,
+        $purpose
+    )) {
+        return null;
+    }
+
+    /*
+     * Invalidate any still-active OTP for the same purpose.
+     */
+    db()->prepare("
+        UPDATE auth_otp_tokens
+        SET used_at = NOW()
+        WHERE subject_key = ?
+          AND purpose = ?
+          AND used_at IS NULL
+    ")->execute([
+        $subjectKey,
+        $purpose,
+    ]);
+
+    $otp = otpCreateCode();
+
+    $hash = hashOtpCode(
+        $purpose,
+        $otp
+    );
+
+    $expires = date(
+        'Y-m-d H:i:s',
+        time() + OTP_LIFETIME_SECONDS
+    );
+
+    db()->prepare("
+        INSERT INTO auth_otp_tokens (
+            subject_key,
+            purpose,
+            otp_hash,
+            attempts,
+            expires_at
+        )
+        VALUES (?, ?, ?, 0, ?)
+    ")->execute([
+        $subjectKey,
+        $purpose,
+        $hash,
+        $expires,
+    ]);
+
+    return $otp;
+}
+
+
+/**
+ * Atomic verification.
+ *
+ * Returns:
+ * [
+ *   'ok' => bool,
+ *   'reason' => valid|invalid|expired|locked|missing
+ *   'attempts_remaining' => int
+ * ]
+ */
+function otpVerify(
+    string $subjectKey,
+    string $purpose,
+    string $submittedOtp
+): array {
+    $submittedOtp = preg_replace(
+        '/\D+/',
+        '',
+        trim($submittedOtp)
+    );
+
+    if (strlen($submittedOtp) !== 6) {
+        return [
+            'ok' => false,
+            'reason' => 'invalid',
+            'attempts_remaining' =>
+                OTP_MAX_ATTEMPTS,
+        ];
+    }
+
+    $pdo = db();
+
+    $pdo->beginTransaction();
+
+    try {
+        $stmt = $pdo->prepare("
+            SELECT
+                id,
+                otp_hash,
+                attempts,
+                expires_at
+            FROM auth_otp_tokens
+            WHERE subject_key = ?
+              AND purpose = ?
+              AND used_at IS NULL
+            ORDER BY id DESC
+            LIMIT 1
+            FOR UPDATE
+        ");
+
+        $stmt->execute([
+            $subjectKey,
+            $purpose,
+        ]);
+
+        $row = $stmt->fetch();
+
+        if (!$row) {
+            $pdo->rollBack();
+
+            return [
+                'ok' => false,
+                'reason' => 'missing',
+                'attempts_remaining' => 0,
+            ];
+        }
+
+        $id = (int)$row['id'];
+        $attempts = (int)$row['attempts'];
+
+        if (
+            strtotime($row['expires_at']) <= time()
+        ) {
+            $pdo->prepare("
+                UPDATE auth_otp_tokens
+                SET used_at = NOW()
+                WHERE id = ?
+            ")->execute([$id]);
+
+            $pdo->commit();
+
+            return [
+                'ok' => false,
+                'reason' => 'expired',
+                'attempts_remaining' => 0,
+            ];
+        }
+
+        if ($attempts >= OTP_MAX_ATTEMPTS) {
+            $pdo->prepare("
+                UPDATE auth_otp_tokens
+                SET used_at = NOW()
+                WHERE id = ?
+            ")->execute([$id]);
+
+            $pdo->commit();
+
+            return [
+                'ok' => false,
+                'reason' => 'locked',
+                'attempts_remaining' => 0,
+            ];
+        }
+
+        $candidateHash = hashOtpCode(
+            $purpose,
+            $submittedOtp
+        );
+
+        if (
+            !hash_equals(
+                $row['otp_hash'],
+                $candidateHash
+            )
+        ) {
+            $attempts++;
+
+            $usedSql =
+                $attempts >= OTP_MAX_ATTEMPTS
+                ? ', used_at = NOW()'
+                : '';
+
+            $pdo->prepare("
+                UPDATE auth_otp_tokens
+                SET attempts = ?
+                {$usedSql}
+                WHERE id = ?
+            ")->execute([
+                $attempts,
+                $id,
+            ]);
+
+            $pdo->commit();
+
+            return [
+                'ok' => false,
+                'reason' =>
+                    $attempts >= OTP_MAX_ATTEMPTS
+                        ? 'locked'
+                        : 'invalid',
+                'attempts_remaining' =>
+                    max(
+                        0,
+                        OTP_MAX_ATTEMPTS -
+                        $attempts
+                    ),
+            ];
+        }
+
+        /*
+         * Successful code is consumed in the same transaction.
+         */
+        $pdo->prepare("
+            UPDATE auth_otp_tokens
+            SET used_at = NOW()
+            WHERE id = ?
+        ")->execute([$id]);
+
+        $pdo->commit();
+
+        return [
+            'ok' => true,
+            'reason' => 'valid',
+            'attempts_remaining' =>
+                max(
+                    0,
+                    OTP_MAX_ATTEMPTS -
+                    $attempts
+                ),
+        ];
+
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+
+        error_log(
+            'GEMB OTP verification database failure'
+        );
+
+        return [
+            'ok' => false,
+            'reason' => 'error',
+            'attempts_remaining' => 0,
+        ];
+    }
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Email OTP
+|--------------------------------------------------------------------------
+*/
+
+function generateEmailOtp(
+    string $email
+): bool {
+    $email = strtolower(trim($email));
+
+    if (!filter_var(
+        $email,
+        FILTER_VALIDATE_EMAIL
+    )) {
+        return false;
+    }
+
+    $purpose = 'admin_login';
+
+    $subjectKey = otpSubjectKey(
+        'email',
+        $email
+    );
+
+    $otp = otpIssue(
+        $subjectKey,
+        $purpose
+    );
+
+    if ($otp === null) {
+        return false;
+    }
+
+    $subject =
+        'GEMB Access Control - Your Login Code';
+
+    $body =
+        "GEMB Access Control\n\n" .
+        "Your login code: {$otp}\n\n" .
+        "Valid for 5 minutes. " .
+        "Do not share this code.\n\n" .
+        "GEMB HOA | POPIA Act 4 of 2013";
+
+    $sent = sendEmail(
+        $email,
+        $subject,
+        $body
+    );
+
+    /*
+     * A failed transmission must not leave
+     * a valid OTP sitting in the database.
+     */
+    if (!$sent) {
+        db()->prepare("
+            UPDATE auth_otp_tokens
+            SET used_at = NOW()
+            WHERE subject_key = ?
+              AND purpose = ?
+              AND used_at IS NULL
+        ")->execute([
+            $subjectKey,
+            $purpose,
+        ]);
+    }
+
+    return $sent;
+}
+
+
+function verifyEmailOtpDetailed(
+    string $email,
+    string $otp
+): array {
+    $subjectKey = otpSubjectKey(
+        'email',
+        strtolower(trim($email))
+    );
+
+    return otpVerify(
+        $subjectKey,
+        'admin_login',
+        $otp
+    );
+}
+
+
+/**
+ * Compatibility wrapper for existing callers.
+ */
+function verifyEmailOtp(
+    string $email,
+    string $otp
+): bool {
+    return verifyEmailOtpDetailed(
+        $email,
+        $otp
+    )['ok'];
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Phone OTP compatibility
+|--------------------------------------------------------------------------
+*/
+
+function generateOtp(
+    string $phone,
+    string $email
+): bool {
+    $phone = normalisePhone($phone);
+
+    if ($phone === '') {
+        return false;
+    }
+
+    $subjectKey = otpSubjectKey(
+        'phone',
+        $phone
+    );
+
+    $otp = otpIssue(
+        $subjectKey,
+        'login'
+    );
+
+    if ($otp === null) {
+        return false;
+    }
+
+    $subject =
+        'GEMB Access Control - Your Login Code';
+
+    $body =
+        "GEMB Access Control\n\n" .
+        "Your login code: {$otp}\n\n" .
+        "Valid for 5 minutes. " .
+        "Do not share this code.\n\n" .
+        "GEMB HOA | POPIA Act 4 of 2013";
+
+    $sent = sendEmail(
+        $email,
+        $subject,
+        $body
+    );
+
+    if (!$sent) {
+        db()->prepare("
+            UPDATE auth_otp_tokens
+            SET used_at = NOW()
+            WHERE subject_key = ?
+              AND purpose = 'login'
+              AND used_at IS NULL
+        ")->execute([$subjectKey]);
+    }
+
+    return $sent;
+}
+
+
+function verifyOtp(
+    string $phone,
+    string $otp
+): bool {
+    $phone = normalisePhone($phone);
+
+    if ($phone === '') {
+        return false;
+    }
+
+    return otpVerify(
+        otpSubjectKey(
+            'phone',
+            $phone
+        ),
+        'login',
+        $otp
+    )['ok'];
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Resident notifications
+|--------------------------------------------------------------------------
+*/
+
 function notifyResidentEntry(
     string $residentEmail,
     string $visitorName,
@@ -144,22 +609,38 @@ function notifyResidentEntry(
     string $gate,
     string $timestamp = ''
 ): void {
-    if (!$residentEmail) return;
-    if (!$timestamp) $timestamp = date('d M Y H:i');
+    if ($residentEmail === '') {
+        return;
+    }
 
-    $label   = $category === 'service_provider' ? 'Service Provider' : 'Visitor';
-    $subject = "GEMB - {$label} Arrived";
-    $body    = "GEMB Access Control\n\n"
-             . "{$label} ARRIVED\n\n"
-             . "Name:  {$visitorName}\n"
-             . "Gate:  {$gate}\n"
-             . "Time:  {$timestamp}\n\n"
-             . "GEMB HOA";
+    if ($timestamp === '') {
+        $timestamp = date('d M Y H:i');
+    }
 
-    sendEmail($residentEmail, $subject, $body);
+    $label =
+        $category === 'service_provider'
+        ? 'Service Provider'
+        : 'Visitor';
+
+    $subject =
+        "GEMB - {$label} Arrived";
+
+    $body =
+        "GEMB Access Control\n\n" .
+        "{$label} ARRIVED\n\n" .
+        "Name:  {$visitorName}\n" .
+        "Gate:  {$gate}\n" .
+        "Time:  {$timestamp}\n\n" .
+        "GEMB HOA";
+
+    sendEmail(
+        $residentEmail,
+        $subject,
+        $body
+    );
 }
 
-// ── Resident exit notification ────────────────────────────────────────────────
+
 function notifyResidentExit(
     string $residentEmail,
     string $visitorName,
@@ -167,17 +648,33 @@ function notifyResidentExit(
     string $gate,
     string $timestamp = ''
 ): void {
-    if (!$residentEmail) return;
-    if (!$timestamp) $timestamp = date('d M Y H:i');
+    if ($residentEmail === '') {
+        return;
+    }
 
-    $label   = $category === 'service_provider' ? 'Service Provider' : 'Visitor';
-    $subject = "GEMB - {$label} Departed";
-    $body    = "GEMB Access Control\n\n"
-             . "{$label} DEPARTED\n\n"
-             . "Name:  {$visitorName}\n"
-             . "Gate:  {$gate}\n"
-             . "Time:  {$timestamp}\n\n"
-             . "GEMB HOA";
+    if ($timestamp === '') {
+        $timestamp = date('d M Y H:i');
+    }
 
-    sendEmail($residentEmail, $subject, $body);
+    $label =
+        $category === 'service_provider'
+        ? 'Service Provider'
+        : 'Visitor';
+
+    $subject =
+        "GEMB - {$label} Departed";
+
+    $body =
+        "GEMB Access Control\n\n" .
+        "{$label} DEPARTED\n\n" .
+        "Name:  {$visitorName}\n" .
+        "Gate:  {$gate}\n" .
+        "Time:  {$timestamp}\n\n" .
+        "GEMB HOA";
+
+    sendEmail(
+        $residentEmail,
+        $subject,
+        $body
+    );
 }
