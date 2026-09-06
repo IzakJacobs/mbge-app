@@ -585,24 +585,6 @@ function verifyEmailOtp(
 }
 
 
-    $subjectKey = otpSubjectKey(
-        'email',
-        strtolower(trim($email))
-    );
-
-    return otpVerify(
-        $subjectKey,
-        'admin_login',
-        $otp
-    );
-
-
-
-/**
- * Compatibility wrapper for existing callers.
- */
-
-
 
 /*
 |--------------------------------------------------------------------------
