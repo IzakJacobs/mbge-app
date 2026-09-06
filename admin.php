@@ -403,11 +403,7 @@ if ($action === 'login') {
 
  if (!$adm) {
 
-    error_log(
-        'ADMIN LOGIN DEBUG: username not found: ' .
-        $user
-    );
-
+    
     bfRecordFailure(
         'admin',
         $user
@@ -442,17 +438,7 @@ if ($action === 'login') {
     )
 ) {
 
-    error_log(
-        'ADMIN LOGIN DEBUG: user found but password_verify failed. ' .
-        'admin_id=' . (int)$adm['id'] .
-        ' hash_prefix=' .
-        substr(
-            (string)$adm['password'],
-            0,
-            7
-        )
-    );
-
+    
     bfRecordFailure(
         'admin',
         $user
@@ -532,28 +518,42 @@ if ($action === 'login') {
                                 : '';
 
                         $storedDeviceHash =
-                            (string)(
-                                $adm['device_token']
-                                ?? ''
-                            );
+    (string)(
+        $adm['device_token']
+        ?? ''
+    );
 
-                        $trustedDevice = false;
+$deviceExpiresAt =
+    (string)(
+        $adm['device_token_expires_at']
+        ?? ''
+    );
 
-                        if (
-                            $browserDeviceToken !== '' &&
-                            $storedDeviceHash !== ''
-                        ) {
-                            $candidateHash =
-                                hashDeviceToken(
-                                    $browserDeviceToken
-                                );
+$trustedDevice = false;
 
-                            $trustedDevice =
-                                hash_equals(
-                                    $storedDeviceHash,
-                                    $candidateHash
-                                );
-                        }
+if (
+    $browserDeviceToken !== '' &&
+    $storedDeviceHash !== '' &&
+    $deviceExpiresAt !== ''
+) {
+    $candidateHash =
+        hashDeviceToken(
+            $browserDeviceToken
+        );
+
+    $expiryTimestamp =
+        strtotime(
+            $deviceExpiresAt
+        );
+
+    $trustedDevice =
+        $expiryTimestamp !== false &&
+        $expiryTimestamp > time() &&
+        hash_equals(
+            $storedDeviceHash,
+            $candidateHash
+        );
+}
 
 
                         /*
@@ -796,14 +796,16 @@ if ($action === 'login') {
                             $pendingDeviceToken
                         );
 
-                    db()->prepare(
-                        "UPDATE admins
-                         SET device_token = ?
-                         WHERE id = ?"
-                    )->execute([
-                        $deviceHash,
-                        $pendingAdminId,
-                    ]);
+                   db()->prepare(
+    "UPDATE admins
+     SET device_token = ?,
+         device_token_expires_at =
+             DATE_ADD(NOW(), INTERVAL 30 DAY)
+     WHERE id = ?"
+)->execute([
+    $deviceHash,
+    $pendingAdminId,
+]);
 
                     adminSetDeviceCookie(
                         $pendingDeviceToken
@@ -1976,9 +1978,13 @@ if ($action === 'add_admin') {
                         phone,
                         password_changed_at,
                         device_token,
+                        device_token_expires_at,
                         active_session_token
                     )
-                    VALUES (?, ?, ?, ?, NULL, NULL, NULL)"
+                    VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL)"
+                    
+                    
+                    
                 )->execute([
                     $username,
                     password_hash(
@@ -2186,78 +2192,77 @@ if ($action === 'add_admin') {
 
 
             try {
-
                 if ($password !== '') {
 
-                    /*
-                     * Administrator-assisted reset:
-                     *
-                     * - new temporary password
-                     * - revoke trusted device
-                     * - revoke current session
-                     * - force password change at next login
-                     */
-                    db()->prepare(
-                        "UPDATE admins
-                         SET username = ?,
-                             email = ?,
-                             phone = ?,
-                             password = ?,
-                             password_changed_at = NULL,
-                             device_token = NULL,
-                             active_session_token = NULL
-                         WHERE id = ?"
-                    )->execute([
-                        $username,
-                        $email,
-                        $phone,
-                        password_hash(
-                            $password,
-                            PASSWORD_DEFAULT
-                        ),
-                        $adminId,
-                    ]);
+    /*
+     * Administrator-assisted reset:
+     *
+     * - new temporary password
+     * - revoke trusted device
+     * - revoke trusted-device expiry
+     * - revoke current session
+     * - force password change at next login
+     */
+    db()->prepare(
+        "UPDATE admins
+         SET username = ?,
+             email = ?,
+             phone = ?,
+             password = ?,
+             password_changed_at = NULL,
+             device_token = NULL,
+             device_token_expires_at = NULL,
+             active_session_token = NULL
+         WHERE id = ?"
+    )->execute([
+        $username,
+        $email,
+        $phone,
+        password_hash(
+            $password,
+            PASSWORD_DEFAULT
+        ),
+        $adminId,
+    ]);
 
 
-                    setFlash(
-                        'success',
-                        'Administrator updated. Their existing session and ' .
-                        'trusted device were revoked, and they must change ' .
-                        'the reset password at next login.'
-                    );
+    setFlash(
+        'success',
+        'Administrator updated. Their existing session and ' .
+        'trusted device were revoked, and they must change ' .
+        'the reset password at next login.'
+    );
 
-                } else {
+} else {
 
-                    db()->prepare(
-                        "UPDATE admins
-                         SET username = ?,
-                             email = ?,
-                             phone = ?
-                         WHERE id = ?"
-                    )->execute([
-                        $username,
-                        $email,
-                        $phone,
-                        $adminId,
-                    ]);
-
-
-                    /*
-                     * Keep displayed session name in sync if the
-                     * currently logged-in admin edits their username.
-                     */
-                    if ($adminId === $selfId) {
-                        $_SESSION[
-                            'admin_name'
-                        ] = $username;
-                    }
+    db()->prepare(
+        "UPDATE admins
+         SET username = ?,
+             email = ?,
+             phone = ?
+         WHERE id = ?"
+    )->execute([
+        $username,
+        $email,
+        $phone,
+        $adminId,
+    ]);
 
 
-                    setFlash(
-                        'success',
-                        'Administrator updated.'
-                    );
-                }
+    /*
+     * Keep displayed session name in sync if the
+     * currently logged-in admin edits their username.
+     */
+    if ($adminId === $selfId) {
+        $_SESSION['admin_name'] = $username;
+    }
+
+
+    setFlash(
+        'success',
+        'Administrator updated.'
+    );
+}
 
             } catch (Throwable $e) {
 
@@ -2292,7 +2297,7 @@ if ($action === 'add_admin') {
                     ]
                     ?? 0
                 );
-
+                
             $selfId =
                 (int)(
                     $_SESSION[
