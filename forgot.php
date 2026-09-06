@@ -84,6 +84,19 @@ $step  = $_SESSION['fp_step'] ?? 'identify';
 $error = '';
 $info  = '';
 
+$otpPurpose = '';
+
+if ($role === 'admin') {
+    $otpPurpose = 'password_reset_admin';
+
+} elseif ($role === 'security') {
+    $otpPurpose = 'password_reset_security';
+
+} elseif ($role === 'resident') {
+    $otpPurpose = 'password_reset_resident';
+}
+
+
 // ════════════════════════════════════════════════════════
 // POST handling
 // ════════════════════════════════════════════════════════

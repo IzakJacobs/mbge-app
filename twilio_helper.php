@@ -585,10 +585,6 @@ function verifyEmailOtp(
 }
 
 
-function verifyEmailOtpDetailed(
-    string $email,
-    string $otp
-): array {
     $subjectKey = otpSubjectKey(
         'email',
         strtolower(trim($email))
@@ -599,21 +595,13 @@ function verifyEmailOtpDetailed(
         'admin_login',
         $otp
     );
-}
+
 
 
 /**
  * Compatibility wrapper for existing callers.
  */
-function verifyEmailOtp(
-    string $email,
-    string $otp
-): bool {
-    return verifyEmailOtpDetailed(
-        $email,
-        $otp
-    )['ok'];
-}
+
 
 
 /*
