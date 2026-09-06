@@ -395,44 +395,86 @@ if ($action === 'login') {
                         $stmt->fetch();
 
 
-                    if (
-                        !$adm ||
-                        !password_verify(
-                            $pass,
-                            (string)$adm['password']
-                        )
-                    ) {
-                        /*
-                         * Generic message avoids username enumeration.
-                         */
-                        bfRecordFailure(
-                            'admin',
-                            $user
-                        );
+ if (!$adm) {
 
-                        $remaining =
-                            bfAttemptsRemaining(
-                                'admin',
-                                $user
-                            );
+    error_log(
+        'ADMIN LOGIN DEBUG: username not found: ' .
+        $user
+    );
 
-                        $error =
-                            'Invalid credentials.';
+    bfRecordFailure(
+        'admin',
+        $user
+    );
 
-                        if ($remaining <= 2) {
-                            $warning =
-                                strip_tags(
-                                    bfWarningMessage(
-                                        $remaining
-                                    )
-                                );
+    $remaining =
+        bfAttemptsRemaining(
+            'admin',
+            $user
+        );
 
-                            if ($warning !== '') {
-                                $error .= ' ' . $warning;
-                            }
-                        }
+    $error =
+        'Invalid credentials.';
 
-                    } else {
+    if ($remaining <= 2) {
+        $warning =
+            strip_tags(
+                bfWarningMessage(
+                    $remaining
+                )
+            );
+
+        if ($warning !== '') {
+            $error .= ' ' . $warning;
+        }
+    }
+
+} elseif (
+    !password_verify(
+        $pass,
+        (string)$adm['password']
+    )
+) {
+
+    error_log(
+        'ADMIN LOGIN DEBUG: user found but password_verify failed. ' .
+        'admin_id=' . (int)$adm['id'] .
+        ' hash_prefix=' .
+        substr(
+            (string)$adm['password'],
+            0,
+            7
+        )
+    );
+
+    bfRecordFailure(
+        'admin',
+        $user
+    );
+
+    $remaining =
+        bfAttemptsRemaining(
+            'admin',
+            $user
+        );
+
+    $error =
+        'Invalid credentials.';
+
+    if ($remaining <= 2) {
+        $warning =
+            strip_tags(
+                bfWarningMessage(
+                    $remaining
+                )
+            );
+
+        if ($warning !== '') {
+            $error .= ' ' . $warning;
+        }
+    }
+
+} else {
 
                         /*
                          * Opportunistically upgrade password hashes if

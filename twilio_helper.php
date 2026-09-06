@@ -444,8 +444,12 @@ function generateEmailOtp(
     );
 
     if ($otp === null) {
-        return false;
-    }
+    error_log(
+        'GEMB OTP DEBUG: issuance blocked by resend/rate limit'
+    );
+
+    return false;
+}
 
     $subject =
         'GEMB Access Control - Your Login Code';
@@ -462,6 +466,16 @@ function generateEmailOtp(
         $subject,
         $body
     );
+    
+    if (!$sent) {
+    error_log(
+        'GEMB OTP DEBUG: OTP created but SMTP send failed'
+    );
+} else {
+    error_log(
+        'GEMB OTP DEBUG: SMTP send reported success'
+    );
+}
 
     /*
      * A failed transmission must not leave
