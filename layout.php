@@ -10,25 +10,9 @@ date_default_timezone_set('Africa/Johannesburg');
 // Called once at file-include time (before any output).
 // Re-issues every gemb_* device cookie with SameSite=Strict,
 // preventing them being sent in cross-site requests (CSRF layer).
-if (session_status() === PHP_SESSION_NONE) session_start();
-foreach ([
-    'gemb_admin_device',
-    'gemb_guard_device',
-    'gemb_security_device',
-    'gemb_resident_device',
-    'gemb_device',           // resident legacy name
-] as $_gemb_cookie) {
-    if (isset($_COOKIE[$_gemb_cookie])) {
-        setcookie($_gemb_cookie, $_COOKIE[$_gemb_cookie], [
-            'expires'  => time() + (10 * 365 * 24 * 60 * 60),
-            'path'     => '/',
-            'secure'   => true,
-            'httponly' => true,
-            'samesite' => 'Strict',
-        ]);
-    }
-}
-unset($_gemb_cookie);
+
+ensureSession();
+
 
 // ── Security headers ──────────────────────────────────────
 if (!headers_sent()) {
